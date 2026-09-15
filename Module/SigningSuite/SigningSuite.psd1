@@ -1,6 +1,6 @@
 @{
     RootModule           = 'SigningSuite.psm1'
-    ModuleVersion        = '2026.9.15.3'
+    ModuleVersion        = '2026.9.15.4'
     GUID                 = '4f1c7a2e-9b3d-4e8a-a6f1-2c5d8e9b7a31'
     Author               = 'Jason Ulbright'
     Copyright            = '(c) Jason Ulbright. All rights reserved.'
@@ -49,7 +49,7 @@
     VariablesToExport    = @()
     AliasesToExport      = @()
     PrivateData          = @{
-        SigningSuiteVersion = '2026.09.15.0003'
+        SigningSuiteVersion = '2026.09.15.0004'
         PSData              = @{
             Tags = @('Authenticode', 'CodeSigning', 'SignTool', 'VBA', 'MSIX')
         }

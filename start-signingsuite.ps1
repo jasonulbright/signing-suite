@@ -22,7 +22,7 @@
 
 .NOTES
     ScriptName : start-signingsuite.ps1
-    Version    : 2026.09.15.0003
+    Version    : 2026.09.15.0004
 #>
 [CmdletBinding()]
 param(
@@ -998,6 +998,53 @@ function Set-IdentitySource {
     Update-IdentityDisplay
 }
 
+function Select-SigningCertificate {
+    <#
+    .SYNOPSIS
+        Picks the startup certificate: the only valid one, an import offer when none is valid, or the picker for several.
+    #>
+    param([System.Windows.Window]$Owner)
+
+    $certificates = @(Get-SigningCertificate -StoreLocation CurrentUser, LocalMachine)
+    if ($certificates.Count -eq 1) {
+        return $certificates[0]
+    }
+
+    if ($certificates.Count -eq 0) {
+        $answer = Show-Message -Owner $Owner -Icon Question -Buttons YesNo -Text ("No valid code-signing certificate with a private key was found in your certificate stores. Expired certificates are not listed.`n`n" +
+            'Select a .pfx file to import now?')
+        if ($answer -ne [System.Windows.MessageBoxResult]::Yes) {
+            return $null
+        }
+        [void](Invoke-PfxImport -Owner $Owner)
+        $certificates = @(Get-SigningCertificate -StoreLocation CurrentUser, LocalMachine)
+        if ($certificates.Count -eq 0) {
+            return $null
+        }
+        if ($certificates.Count -eq 1) {
+            return $certificates[0]
+        }
+    }
+
+    Show-CertificatePicker -Owner $Owner
+}
+
+function Initialize-SigningIdentity {
+    <#
+    .SYNOPSIS
+        At startup, asks for a certificate when the certificate store is the source and no valid certificate is selected.
+    #>
+    if ($script:Identity.Source -ne 'Store' -or $script:Identity.Certificate) {
+        return
+    }
+    $picked = Select-SigningCertificate -Owner $script:MainWindow
+    if ($picked) {
+        $script:Identity.Certificate = $picked
+        $script:Settings.CertificateThumbprint = $picked.Thumbprint
+    }
+    Update-IdentityDisplay
+}
+
 function Invoke-ChangeIdentity {
     switch ($script:Identity.Source) {
         'Store' {
@@ -1743,6 +1790,7 @@ $window.Add_ContentRendered({
             return
         }
         $script:StartupDone = $true
+        Invoke-Safely { Initialize-SigningIdentity }
         if ($Path) {
             Invoke-Safely { Add-InputPath -Path $Path }
         }

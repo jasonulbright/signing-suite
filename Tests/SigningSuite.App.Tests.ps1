@@ -358,6 +358,41 @@ Describe 'Window behavior' -Skip:(-not $script:isSta) {
         $actual | Should -BeExactly "$Expected"
     }
 
+    It 'offers a PFX import at startup when no valid certificate exists' {
+        $script:importOffered = $false
+        function Get-SigningCertificate { param($StoreLocation) }
+        function Invoke-PfxImport { param($Owner) $script:importOffered = $true }
+        $script:shownMessages.Clear()
+        Select-SigningCertificate -Owner $null | Should -BeNullOrEmpty
+        $script:shownMessages[0] | Should -BeLike 'No valid code-signing certificate*Select a .pfx file to import now?'
+        $script:importOffered | Should -BeTrue
+    }
+
+    It 'uses the only valid certificate without asking' {
+        $only = [pscustomobject]@{ Thumbprint = 'AA' }
+        function Get-SigningCertificate { param($StoreLocation) $only }
+        $script:shownMessages.Clear()
+        (Select-SigningCertificate -Owner $null).Thumbprint | Should -Be 'AA'
+        $script:shownMessages.Count | Should -Be 0
+    }
+
+    It 'opens the picker when several valid certificates exist' {
+        function Get-SigningCertificate { param($StoreLocation) [pscustomobject]@{ Thumbprint = 'AA' }; [pscustomobject]@{ Thumbprint = 'BB' } }
+        function Show-CertificatePicker { param($Owner) [pscustomobject]@{ Thumbprint = 'BB' } }
+        (Select-SigningCertificate -Owner $null).Thumbprint | Should -Be 'BB'
+    }
+
+    It 'asks at startup only for the certificate store with no certificate selected' {
+        $script:asked = 0
+        function Select-SigningCertificate { param($Owner) $script:asked++ }
+        $script:Identity.Source = 'ArtifactSigning'
+        Initialize-SigningIdentity
+        $script:Identity.Source = 'Store'
+        $script:Identity.Certificate = $null
+        Initialize-SigningIdentity
+        $script:asked | Should -Be 1
+    }
+
     It 'gives every input control an automation name' {
         $unnamed = foreach ($match in [regex]::Matches($script:MainXaml, '<(TextBox|ComboBox|DataGrid|PasswordBox)[\s/>][^>]*>')) {
             if ($match.Value -notmatch 'AutomationProperties\.Name=') {

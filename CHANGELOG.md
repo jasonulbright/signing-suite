@@ -1,5 +1,12 @@
 # Changelog
 
+## [2026.09.15.0004] - 2026-09-15
+
+### Fixes
+
+- Offer a certificate import at startup when no valid certificate exists.
+- Open the certificate picker at startup when several valid certificates exist.
+
 ## [2026.09.15.0003] - 2026-09-15
 
 ### Fixes
