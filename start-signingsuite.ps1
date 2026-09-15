@@ -22,7 +22,7 @@
 
 .NOTES
     ScriptName : start-signingsuite.ps1
-    Version    : 2026.09.15.0001
+    Version    : 2026.09.15.0002
 #>
 [CmdletBinding()]
 param(
@@ -30,14 +30,15 @@ param(
     [string[]]$Path
 )
 
+#region Relaunch
 if ($PSVersionTable.PSEdition -ne 'Desktop') {
-    $relaunch = @('-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"")
-    foreach ($entry in $Path) {
-        $relaunch += "`"$entry`""
-    }
+    # A backslash before a closing quote escapes the quote; doubling trailing backslashes keeps each argument whole.
+    $relaunch = @('-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File') +
+        @(@($PSCommandPath) + @($Path) | Where-Object { $_ } | ForEach-Object { '"' + ($_ -replace '(\\+)$', '$1$1') + '"' })
     Start-Process -FilePath (Join-Path $env:windir 'System32\WindowsPowerShell\v1.0\powershell.exe') -ArgumentList $relaunch
     return
 }
+#endregion
 
 if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -ne [System.Threading.ApartmentState]::STA) {
     throw "WPF requires a single-threaded apartment. Start the tool with: powershell.exe -STA -File `"$PSCommandPath`""
@@ -47,11 +48,12 @@ if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -ne [System.Thr
 # Windows PowerShell started from some PowerShell 7 sessions keeps the 7.x module folders in PSModulePath. Importing
 # Microsoft.PowerShell.Security then fails with "The member AuditToString is already present", and
 # Import-PowerShellDataFile goes missing.
+# The Windows PowerShell defaults come first so a user module still takes precedence over a system module of the same name.
 $env:PSModulePath = (@(
+        @((Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'WindowsPowerShell\Modules'), (Join-Path $env:ProgramFiles 'WindowsPowerShell\Modules'), (Join-Path $PSHOME 'Modules')) +
         @($env:PSModulePath -split ';') +
         @([Environment]::GetEnvironmentVariable('PSModulePath', 'User') -split ';') +
-        @([Environment]::GetEnvironmentVariable('PSModulePath', 'Machine') -split ';') +
-        @((Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'WindowsPowerShell\Modules'), (Join-Path $env:ProgramFiles 'WindowsPowerShell\Modules'), (Join-Path $PSHOME 'Modules')) |
+        @([Environment]::GetEnvironmentVariable('PSModulePath', 'Machine') -split ';') |
         Where-Object { $_ -and $_ -notmatch '(?<!Windows)PowerShell\\(7|Modules)' -and $_ -notmatch '\\Microsoft\.PowerShell_' } |
         ForEach-Object -Begin { $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase) } -Process {
             $folder = $_.TrimEnd('\')
@@ -1117,10 +1119,8 @@ function Invoke-BitnessRelaunch {
     }
     $folder = if ([Environment]::Is64BitProcess) { 'SysWOW64' } else { 'Sysnative' }
     $powershellExe = Join-Path -Path $env:windir -ChildPath "$folder\WindowsPowerShell\v1.0\powershell.exe"
-    $arguments = @('-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', "`"$script:ScriptPath`"")
-    foreach ($row in $script:Rows) {
-        $arguments += "`"$($row.Path)`""
-    }
+    $arguments = @('-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File') +
+        @(@($script:ScriptPath) + @($script:Rows | ForEach-Object { $_.Path }) | ForEach-Object { ConvertTo-CommandLineArgument -Value $_ })
     Save-CurrentSettings
     Start-Process -FilePath $powershellExe -ArgumentList $arguments
     $script:MainWindow.Close()

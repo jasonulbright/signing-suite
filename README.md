@@ -1,6 +1,6 @@
 # Signing Suite
 
-**Download:** [SigningSuite-2026.09.15.0001.zip](https://github.com/jasonulbright/signing-suite/releases/download/v2026.09.15.0001/SigningSuite-2026.09.15.0001.zip)
+**Download:** [SigningSuite-2026.09.15.0002.zip](https://github.com/jasonulbright/signing-suite/releases/download/v2026.09.15.0002/SigningSuite-2026.09.15.0002.zip)
 
 WPF tool that Authenticode-signs scripts, executables, installers, cabinets, catalogs, app packages and the VBA projects in Office files. Drop files or folders onto the window; each file shows its format, its current signature and whether it can be signed, and one button signs the rest.
 
@@ -37,7 +37,7 @@ The scripts are not signed. If your execution policy requires signed scripts, un
 powershell.exe -NoProfile -STA -File .\start-signingsuite.ps1
 
 # List files or folders at startup
-powershell.exe -NoProfile -STA -File .\start-signingsuite.ps1 -Path 'C:\Build\Output', 'C:\Scripts\Deploy.ps1'
+powershell.exe -NoProfile -STA -File .\start-signingsuite.ps1 'C:\Build\Output' 'C:\Scripts\Deploy.ps1'
 ```
 
 1. Pick the signing identity at the top: **Certificate store**, **Artifact Signing** or **Digest signing library**, then **Change...**.

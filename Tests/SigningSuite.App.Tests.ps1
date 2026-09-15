@@ -106,6 +106,10 @@ Describe 'Source files' {
         [System.IO.File]::WriteAllText($probe, $region.Groups[1].Value + @'
 try { Import-Module Microsoft.PowerShell.Security -ErrorAction Stop; 'security-ok' } catch { 'security-failed' }
 if (Get-Command Import-PowerShellDataFile -ErrorAction SilentlyContinue) { 'datafile-ok' } else { 'datafile-missing' }
+$folders = @($env:PSModulePath -split ';')
+$user = [Array]::IndexOf($folders, (Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'WindowsPowerShell\Modules'))
+$system = [Array]::IndexOf($folders, (Join-Path $PSHOME 'Modules'))
+if ($user -ge 0 -and $user -lt $system) { 'order-ok' } else { "order-wrong $user $system" }
 '@)
         $inherited = @(
             (Join-Path $env:USERPROFILE 'Documents\PowerShell\Modules')
@@ -124,6 +128,49 @@ if (Get-Command Import-PowerShellDataFile -ErrorAction SilentlyContinue) { 'data
         }
         $output | Should -Contain 'security-ok'
         $output | Should -Contain 'datafile-ok'
+        $output | Should -Contain 'order-ok'
+    }
+
+    It 'quotes PowerShell 7 relaunch arguments so each path survives: <Value>' -ForEach @(
+        @{ Value = 'C:\Some Folder\' }
+        @{ Value = 'C:\Some Folder\\' }
+        @{ Value = 'C:\x y\file.ps1' }
+        @{ Value = 'C:\' }
+    ) {
+        $region = [regex]::Match($script:entryText, '(?s)#region Relaunch\r?\n(.*?)#endregion').Groups[1].Value
+        $quoting = [regex]::Match($region, "ForEach-Object (\{ '`"' \+ \(\`$_ -replace [^}]+\})").Groups[1].Value
+        $quoting | Should -Not -BeNullOrEmpty
+        if (-not ('SigningSuiteAppTests.Argv' -as [type])) {
+            Add-Type -Namespace SigningSuiteAppTests -Name Argv -MemberDefinition @'
+[DllImport("shell32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+static extern IntPtr CommandLineToArgvW(string lpCmdLine, out int pNumArgs);
+[DllImport("kernel32.dll")]
+static extern IntPtr LocalFree(IntPtr hMem);
+public static string[] Split(string commandLine)
+{
+    int count;
+    IntPtr pointer = CommandLineToArgvW(commandLine, out count);
+    try
+    {
+        string[] result = new string[count];
+        for (int i = 0; i < count; i++)
+        {
+            result[i] = Marshal.PtrToStringUni(Marshal.ReadIntPtr(pointer, i * IntPtr.Size));
+        }
+        return result;
+    }
+    finally
+    {
+        LocalFree(pointer);
+    }
+}
+'@
+        }
+        $quoted = @($Value, 'C:\Other') | ForEach-Object ([scriptblock]::Create($quoting.Trim('{', '}', ' ')))
+        $parsed = [SigningSuiteAppTests.Argv]::Split("powershell.exe $($quoted -join ' ')")
+        $parsed.Count | Should -Be 3
+        $parsed[1] | Should -BeExactly $Value
+        $parsed[2] | Should -BeExactly 'C:\Other'
     }
 
     It 'keeps tests, native test sources and release tooling out of the release archive' {

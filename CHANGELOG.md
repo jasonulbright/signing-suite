@@ -1,5 +1,12 @@
 # Changelog
 
+## [2026.09.15.0002] - 2026-09-15
+
+### Fixes
+
+- Keep folder paths ending in a backslash when restarting from PowerShell 7.
+- Keep user modules ahead of system modules after the module path repair.
+
 ## [2026.09.15.0001] - 2026-09-15
 
 ### Platform

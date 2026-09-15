@@ -38,7 +38,7 @@
 
 .NOTES
     ScriptName : Invoke-SigningSuite.ps1
-    Version    : 2026.09.15.0001
+    Version    : 2026.09.15.0002
 #>
 [CmdletBinding(SupportsShouldProcess, DefaultParameterSetName = 'Store')]
 param(
@@ -94,11 +94,12 @@ $ErrorActionPreference = 'Stop'
 # Windows PowerShell started from some PowerShell 7 sessions keeps the 7.x module folders in PSModulePath. Importing
 # Microsoft.PowerShell.Security then fails with "The member AuditToString is already present", and
 # Import-PowerShellDataFile goes missing.
+# The Windows PowerShell defaults come first so a user module still takes precedence over a system module of the same name.
 $env:PSModulePath = (@(
+        @((Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'WindowsPowerShell\Modules'), (Join-Path $env:ProgramFiles 'WindowsPowerShell\Modules'), (Join-Path $PSHOME 'Modules')) +
         @($env:PSModulePath -split ';') +
         @([Environment]::GetEnvironmentVariable('PSModulePath', 'User') -split ';') +
-        @([Environment]::GetEnvironmentVariable('PSModulePath', 'Machine') -split ';') +
-        @((Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'WindowsPowerShell\Modules'), (Join-Path $env:ProgramFiles 'WindowsPowerShell\Modules'), (Join-Path $PSHOME 'Modules')) |
+        @([Environment]::GetEnvironmentVariable('PSModulePath', 'Machine') -split ';') |
         Where-Object { $_ -and $_ -notmatch '(?<!Windows)PowerShell\\(7|Modules)' -and $_ -notmatch '\\Microsoft\.PowerShell_' } |
         ForEach-Object -Begin { $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase) } -Process {
             $folder = $_.TrimEnd('\')
