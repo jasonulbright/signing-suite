@@ -1,0 +1,15 @@
+# Local working notes
+*.local.md
+*.local.*
+
+# Build output
+out/
+dist/
+
+# Runtime state
+SigningSuite.settings.json
+Logs/
+
+# Native test helper build output
+Tests/Native/bin/
+Tests/Native/obj/

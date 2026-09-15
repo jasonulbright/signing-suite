@@ -1,0 +1,15 @@
+* text=auto
+*.ps1 text eol=crlf
+*.psm1 text eol=crlf
+*.psd1 text eol=crlf
+*.xaml text eol=crlf
+*.md text eol=crlf
+*.c text eol=crlf
+*.def text eol=crlf
+
+/Tests export-ignore
+/tools export-ignore
+/RELEASING.md export-ignore
+/ROADMAP.md export-ignore
+/.gitattributes export-ignore
+/.gitignore export-ignore
