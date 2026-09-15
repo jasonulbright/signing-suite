@@ -182,7 +182,14 @@ jobs:
               echo "Release $RELEASE_TAG is published; run again with replace_existing to replace its installer."
               exit 1
             fi
-            gh release upload "$RELEASE_TAG" "release/SigningSuiteSetup-$VERSION.exe" release/checksums.txt --clobber
+            # git archive on the runner does not reproduce the published zip byte for byte, so the published zip stays
+            # (keeping its download count) and checksums.txt is rewritten from that zip and the signed installer.
+            mkdir -p published
+            gh release download "$RELEASE_TAG" --pattern "SigningSuite-$VERSION.zip" --dir published
+            (cd published && sha256sum "SigningSuite-$VERSION.zip") > checksums.txt
+            (cd release && sha256sum "SigningSuiteSetup-$VERSION.exe") >> checksums.txt
+            cat checksums.txt
+            gh release upload "$RELEASE_TAG" "release/SigningSuiteSetup-$VERSION.exe" checksums.txt --clobber
             exit 0
           fi
           test -n "$HEADLINE" || { echo 'headline is required for a new release'; exit 1; }
