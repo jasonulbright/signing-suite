@@ -9,6 +9,8 @@
 
 /Tests export-ignore
 /tools export-ignore
+/installer export-ignore
+/screenshots export-ignore
 /RELEASING.md export-ignore
 /ROADMAP.md export-ignore
 /.gitattributes export-ignore

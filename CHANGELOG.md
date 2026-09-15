@@ -1,5 +1,14 @@
 # Changelog
 
+## [2026.09.15.0005] - 2026-09-15
+
+### Delivery
+
+- Install with SigningSuiteSetup.exe and choose optional components.
+- Download and verify prerequisites from Microsoft during setup.
+- Install every component silently with /VERYSILENT.
+- Start the portable zip with SigningSuite.cmd.
+
 ## [2026.09.15.0004] - 2026-09-15
 
 ### Fixes

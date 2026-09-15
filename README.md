@@ -1,8 +1,46 @@
 # Signing Suite
 
-**Download:** [SigningSuite-2026.09.15.0004.zip](https://github.com/jasonulbright/signing-suite/releases/download/v2026.09.15.0004/SigningSuite-2026.09.15.0004.zip)
+[![Latest release](https://img.shields.io/github/v/release/jasonulbright/signing-suite?label=release)](https://github.com/jasonulbright/signing-suite/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/jasonulbright/signing-suite/total?label=downloads)](https://github.com/jasonulbright/signing-suite/releases)
+[![Platform](https://img.shields.io/badge/platform-Windows-0078D4)](#requirements)
+[![PowerShell](https://img.shields.io/badge/PowerShell-5.1-5391FE)](#requirements)
+[![License](https://img.shields.io/github/license/jasonulbright/signing-suite)](LICENSE)
+
+**Download:** [SigningSuiteSetup-2026.09.15.0005.exe](https://github.com/jasonulbright/signing-suite/releases/download/v2026.09.15.0005/SigningSuiteSetup-2026.09.15.0005.exe) (installer) or [SigningSuite-2026.09.15.0005.zip](https://github.com/jasonulbright/signing-suite/releases/download/v2026.09.15.0005/SigningSuite-2026.09.15.0005.zip) (portable)
 
 WPF tool that Authenticode-signs scripts, executables, installers, cabinets, catalogs, app packages and the VBA projects in Office files. Drop files or folders onto the window; each file shows its format, its current signature and whether it can be signed, and one button signs the rest.
+
+![Signing Suite](screenshots/main.png)
+
+## Install
+
+### Installer
+
+Run `SigningSuiteSetup-<version>.exe`. Setup needs administrator rights and an internet connection: every prerequisite downloads from Microsoft during setup and is checked against a pinned SHA256 hash before it runs. Prerequisites that are already installed are skipped.
+
+| Component | Default | What setup does |
+|---|---|---|
+| Signing Suite | Always installed | Copies the app to `C:\Program Files\Signing Suite` and adds a Start menu shortcut (and a desktop shortcut unless you clear it). The shortcut runs `powershell.exe -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File start-signingsuite.ps1`. |
+| Office signing add-in | Selected | Installs the Visual C++ runtime (x64 and x86) when missing, extracts the Office SIPs to `C:\Program Files\Microsoft Office SIPs\x64` and `x86`, and registers them. |
+| Windows SDK signing tools | Selected | Installs `signtool.exe` with `winsdksetup.exe /features OptionId.SigningTools`. |
+| Artifact Signing Client Tools | Selected | Installs the Microsoft MSI. It installs into the profile of the account that runs setup. |
+| Azure CLI | Selected | Installs the 64-bit Azure CLI MSI. |
+
+Clear any selected component on the **Select Components** page. Uninstall removes the app; prerequisites stay installed.
+
+The installer is not signed. Windows SmartScreen may show "Windows protected your PC"; select **More info**, then **Run anyway**.
+
+Silent install (installs every component):
+
+```bat
+SigningSuiteSetup-<version>.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG="%TEMP%\SigningSuiteSetup.log"
+```
+
+Limit components with `/COMPONENTS="app,officesips,sdktools"`. Setup returns 0 on success and a non-zero exit code when a prerequisite download or installation fails; the log names the step. When setup runs as SYSTEM (for example from a software deployment tool), Artifact Signing Client Tools install into the SYSTEM profile, not into users' profiles.
+
+### Portable zip
+
+Extract `SigningSuite-<version>.zip` to any folder and double-click `SigningSuite.cmd`. It starts the app in Windows PowerShell with `-ExecutionPolicy Bypass` and no console window. Install the prerequisites in [Requirements](#requirements) yourself.
 
 ## Formats
 

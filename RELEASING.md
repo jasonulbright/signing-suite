@@ -1,6 +1,6 @@
 # Releasing Signing Suite
 
-A release ships `SigningSuite-<version>.zip` and `checksums.txt`. The scripts are not signed.
+A release ships `SigningSuiteSetup-<version>.exe` (Inno Setup installer), `SigningSuite-<version>.zip` (portable) and `checksums.txt`. The scripts and the installer are not signed.
 
 ## 1. Pick the version
 
@@ -36,15 +36,16 @@ git push origin main v<version>
 
 ```powershell
 .\tools\Build-Release.ps1 -Version <version>
+.\tools\Build-Installer.ps1 -Version <version>
 ```
 
-The build archives the tag with `git archive`, refuses a version that differs from the manifest, and fails if tests or release tooling reach the zip.
+`Build-Release.ps1` archives the tag with `git archive`, refuses a version that differs from the manifest, fails if tests or release tooling reach the zip, and writes `checksums.txt`. `Build-Installer.ps1` needs Inno Setup 6 (`winget install -e --id JRSoftware.InnoSetup`). It packages the same tag, downloads every prerequisite pinned in `installer/SigningSuite.iss`, fails when a hash or Microsoft signature does not match, compiles the installer and adds it to `checksums.txt`. When Microsoft publishes a new prerequisite build, update its URL and SHA256 in `installer/SigningSuite.iss`.
 
 Release notes: title is the tag. The first line is the download link, then a `##` headline with one concrete outcome, `###` sections by kind of change, and the footer `Full changelog: CHANGELOG.md`.
 
 ```bash
 gh release create v<version> --title v<version> --notes-file notes.md
-gh release upload v<version> dist/SigningSuite-<version>.zip dist/checksums.txt
+gh release upload v<version> dist/SigningSuiteSetup-<version>.exe dist/SigningSuite-<version>.zip dist/checksums.txt
 gh api repos/jasonulbright/signing-suite/releases/tags/v<version> --jq '.assets[].name'
 ```
 

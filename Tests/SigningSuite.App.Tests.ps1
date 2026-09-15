@@ -173,6 +173,43 @@ public static string[] Split(string commandLine)
         $parsed[2] | Should -BeExactly 'C:\Other'
     }
 
+    It 'starts the portable launcher in Windows PowerShell with Bypass' {
+        $launcher = [System.IO.File]::ReadAllText((Join-Path $script:repoRoot 'SigningSuite.cmd'))
+        $launcher | Should -Match 'System32\\WindowsPowerShell\\v1\.0\\powershell\.exe'
+        $launcher | Should -Match '-ExecutionPolicy Bypass'
+        $launcher | Should -Match '-STA'
+        $launcher | Should -Match '"%~dp0start-signingsuite\.ps1"'
+    }
+
+    It 'pins a SHA256 for every installer download' {
+        $iss = [System.IO.File]::ReadAllText((Join-Path $script:repoRoot 'installer\SigningSuite.iss'))
+        $urls = @([regex]::Matches($iss, "(?m)^\s*(\w+)Url\s*=\s*'(https://[^']+)';") | ForEach-Object { $_.Groups[1].Value })
+        $urls.Count | Should -Be 7
+        foreach ($name in $urls) {
+            $iss | Should -Match "(?m)^\s*${name}Sha256\s*=\s*'[0-9a-f]{64}';"
+            $iss | Should -Match "QueueDownload\(${name}Url, '[^']+', ${name}Sha256\)"
+        }
+    }
+
+    It 'selects every installer component by default and fixes only the app' {
+        $iss = [System.IO.File]::ReadAllText((Join-Path $script:repoRoot 'installer\SigningSuite.iss'))
+        $components = [regex]::Matches($iss, '(?m)^Name: "(\w+)"; Description: "[^"]+"; Types: ([^;\r\n]+)(; Flags: (\w+))?')
+        @($components | ForEach-Object { $_.Groups[1].Value }) | Should -Be @('app', 'officesips', 'sdktools', 'artifactsigning', 'azurecli')
+        foreach ($component in $components) {
+            $component.Groups[2].Value.Trim() | Should -Be 'full custom'
+            if ($component.Groups[1].Value -eq 'app') {
+                $component.Groups[4].Value | Should -Be 'fixed'
+            }
+            else {
+                $component.Groups[4].Value | Should -BeNullOrEmpty
+            }
+        }
+        foreach ($shortcut in [regex]::Matches($iss, '(?m)^Name: "\{auto\w+\}\\Signing Suite"; Filename: "([^"]+)"; Parameters: "([^"]*(?:""[^"]*)*)"')) {
+            $shortcut.Groups[1].Value | Should -Be '{sys}\WindowsPowerShell\v1.0\powershell.exe'
+            $shortcut.Groups[2].Value | Should -Match '-STA -ExecutionPolicy Bypass'
+        }
+    }
+
     It 'keeps tests, native test sources and release tooling out of the release archive' {
         $attributes = [System.IO.File]::ReadAllText((Join-Path $script:repoRoot '.gitattributes'))
         foreach ($pattern in '/Tests', '/tools', '/RELEASING.md', '/.gitattributes', '/.gitignore') {
