@@ -391,6 +391,18 @@ function Get-SignToolFailureMessage {
     if ($text -match '0x8007000b') {
         $text += ' For app packages this means the manifest Publisher does not match the certificate subject.'
     }
+    # A digest signing library reports service failures as an HTTP status in its exception text, and signtool then
+    # reports only "SignerSign() failed (0x80004005)".
+    $status = [regex]::Match(($Run.Output + "`n" + $Run.Error), '(?m)^\s*Status:\s*(\d{3})')
+    if ($status.Success) {
+        $hint = switch ($status.Groups[1].Value) {
+            '401' { 'The signing service rejected the sign-in (401). Sign in with az login, or set AZURE_CLIENT_ID, AZURE_TENANT_ID and AZURE_CLIENT_SECRET.' }
+            '403' { 'The signing service refused the request (403). Give the signed-in identity the Artifact Signing Certificate Profile Signer role, and check the endpoint region, account name and certificate profile name.' }
+            '404' { 'The signing service did not find the account or certificate profile (404). Check the endpoint region, account name and certificate profile name.' }
+            default { "The signing service returned HTTP status $($status.Groups[1].Value)." }
+        }
+        $text = "$hint $text"
+    }
     $text
 }
 

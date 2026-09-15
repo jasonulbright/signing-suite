@@ -1,5 +1,12 @@
 # Changelog
 
+## [2026.09.15.0003] - 2026-09-15
+
+### Fixes
+
+- Explain signing service sign-in, permission and not-found errors in Details.
+- Suggest the timestamp server only when a timestamp failed.
+
 ## [2026.09.15.0002] - 2026-09-15
 
 ### Fixes

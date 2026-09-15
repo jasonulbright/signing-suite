@@ -22,7 +22,7 @@
 
 .NOTES
     ScriptName : start-signingsuite.ps1
-    Version    : 2026.09.15.0002
+    Version    : 2026.09.15.0003
 #>
 [CmdletBinding()]
 param(
@@ -1298,6 +1298,7 @@ function Invoke-Signing {
         NotAttempted = $notAttempted
         SkippedValid = $candidates.SkippedValid
         Timestamp    = $options.TimestampServer
+        TimestampFailures = 0
     }
     Switch-BusyState -Busy $true -Maximum $rows.Count
     $script:ui.Progress.Value = $notAttempted
@@ -1326,7 +1327,12 @@ function Invoke-Signing {
         switch ($result.Status) {
             'Signed' { $stats.Signed++ }
             'Skipped' { $stats.Skipped++ }
-            default { $stats.Failed++ }
+            default {
+                $stats.Failed++
+                if ($result.Detail -match 'timestamp') {
+                    $stats.TimestampFailures++
+                }
+            }
         }
         $script:ui.Progress.Value = $stats.Done
         $script:ui.SummaryText.Text = "Signing $($stats.Done) of $($stats.Total)..."
@@ -1347,7 +1353,7 @@ function Invoke-Signing {
         if ($failed -gt 0) {
             $icon = [System.Windows.MessageBoxImage]::Warning
             $text += " $failed failed; the Details column shows why."
-            if ($stats.Signed -eq 0 -and $stats.Failed -gt 0 -and $stats.Timestamp) {
+            if ($stats.TimestampFailures -gt 0 -and $stats.Timestamp) {
                 $text += "`n`nIf this PC cannot reach $($stats.Timestamp), choose None as the timestamp type and sign again."
             }
         }

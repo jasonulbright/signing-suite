@@ -410,6 +410,17 @@ public static string[] Split(string commandLine)
         }
     }
 
+    It 'explains a signing service HTTP <Code> failure' -ForEach @(
+        @{ Code = '401'; Expected = 'The signing service rejected the sign-in (401)*' }
+        @{ Code = '403'; Expected = '*refused the request (403)*Certificate Profile Signer role*SignerSign() failed*' }
+        @{ Code = '404'; Expected = '*did not find the account or certificate profile (404)*' }
+    ) {
+        $output = "Submitting digest for signing...`r`nUnhandled managed exception`r`nAzure.RequestFailedException: Service request failed.`r`nStatus: $Code (Forbidden)`r`n`r`nError information: `"Error: SignerSign() failed.`" (-2147467259/0x80004005)`r`nSignTool Error: An unexpected internal error has occurred.`r`n"
+        $run = [pscustomobject]@{ ExitCode = 1; TimedOut = $false; Output = $output; Error = ''; Errors = @('An unexpected internal error has occurred.'); Warnings = @() }
+        $message = & (Get-Module SigningSuite) { param($r) Get-SignToolFailureMessage -Run $r } $run
+        $message | Should -BeLike $Expected
+    }
+
     It 'joins signtool messages wrapped onto indented lines' {
         $text = "Done Adding Additional Store`r`nSignTool Error: A certificate chain processed, but terminated in a root`r`n`tcertificate which is not trusted by the trust provider.`r`n`r`nSignTool Warning: Signing succeeded, but an error occurred.`r`nSignTool Error: An error occurred while attempting to sign: C:\x.ps1`r`n"
         $messages = ConvertFrom-SignToolOutput -Text $text
