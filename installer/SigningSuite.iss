@@ -34,6 +34,12 @@ Compression=lzma2
 SolidCompression=yes
 SetupLogging=yes
 ChangesEnvironment=yes
+#ifdef SignCommand
+; tools\Build-Installer.ps1 passes /DSignCommand and /Ssigningsuite=<signtool command>; Inno Setup then signs the
+; uninstaller it embeds and the finished setup file.
+SignTool=signingsuite
+SignedUninstaller=yes
+#endif
 UninstallDisplayName=Signing Suite
 UninstallDisplayIcon={sys}\WindowsPowerShell\v1.0\powershell.exe
 

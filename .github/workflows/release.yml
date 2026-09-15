@@ -1,8 +1,8 @@
 name: Signed release
 
-# Procedure: RELEASING.md. Builds the portable zip and the installer from a pushed tag, signs the installer with
-# Artifact Signing through the release environment, and either opens a draft release or replaces the installer and
-# checksums on the existing release for that tag.
+# Procedure: RELEASING.md. Builds the portable zip and the installer from a pushed tag. Inno Setup signs the embedded
+# uninstaller and the setup file with Artifact Signing through the release environment. The last job either opens a
+# draft release or replaces the installer and checksums on the existing release for that tag.
 on:
   workflow_dispatch:
     inputs:
@@ -30,7 +30,7 @@ concurrency:
 jobs:
   build:
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     env:
       RELEASE_TAG: ${{ github.event.inputs.tag }}
     outputs:
@@ -55,6 +55,37 @@ jobs:
           if ($env:RELEASE_TAG -cne "v$version") { throw "Tag $env:RELEASE_TAG does not match SigningSuiteVersion $version" }
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding ascii
 
+      - name: Build the portable zip
+        shell: powershell
+        run: |
+          & .\tools\Build-Release.ps1 -Version '${{ steps.version.outputs.version }}'
+          if (-not $?) { throw 'Build-Release.ps1 failed' }
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: portable-zip
+          path: dist/SigningSuite-${{ steps.version.outputs.version }}.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  sign:
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+      RELEASE_TAG: ${{ github.event.inputs.tag }}
+    steps:
+      # The build tooling and installer script come from the workflow ref; the installed files come from the tag.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
       - name: Install Inno Setup
         shell: pwsh
         run: |
@@ -65,43 +96,33 @@ jobs:
           }
           if (-not (Test-Path -LiteralPath $iscc)) { throw "ISCC.exe not found at $iscc" }
 
-      - name: Build the portable zip
-        shell: powershell
+      - name: Get signtool and the Artifact Signing client library
+        id: tools
+        shell: pwsh
         run: |
-          & .\tools\Build-Release.ps1 -Version '${{ steps.version.outputs.version }}'
-          if (-not $?) { throw 'Build-Release.ps1 failed' }
-
-      # Build-Installer.ps1 downloads every pinned prerequisite and fails on a hash or signature mismatch.
-      - name: Build the installer
-        shell: powershell
-        run: |
-          & .\tools\Build-Installer.ps1 -Version '${{ steps.version.outputs.version }}'
-          if (-not $?) { throw 'Build-Installer.ps1 failed' }
-
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: unsigned-release
-          path: |
-            dist/SigningSuite-${{ steps.version.outputs.version }}.zip
-            dist/SigningSuiteSetup-${{ steps.version.outputs.version }}.exe
-          if-no-files-found: error
-          retention-days: 7
-
-  sign:
-    needs: build
-    runs-on: windows-latest
-    timeout-minutes: 15
-    environment: release
-    permissions:
-      contents: read
-      id-token: write
-    env:
-      VERSION: ${{ needs.build.outputs.version }}
-    steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: unsigned-release
-          path: release
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+            Sort-Object { [version]$_.Directory.Parent.Name } -Descending | Select-Object -First 1
+          if (-not $signtool) { throw 'signtool.exe was not found in the Windows SDK' }
+          $package = Join-Path $env:RUNNER_TEMP 'artifactsigning.zip'
+          $folder = Join-Path $env:RUNNER_TEMP 'artifactsigning'
+          Invoke-WebRequest -UseBasicParsing -Uri 'https://www.nuget.org/api/v2/package/Microsoft.ArtifactSigning.Client' -OutFile $package
+          Expand-Archive -LiteralPath $package -DestinationPath $folder
+          $dlib = Get-ChildItem $folder -Recurse -Filter Azure.CodeSigning.Dlib.dll | Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -First 1
+          if (-not $dlib) { throw 'Azure.CodeSigning.Dlib.dll (x64) was not found in the NuGet package' }
+          $signature = Get-AuthenticodeSignature -LiteralPath $dlib.FullName
+          if ([string]$signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch '^CN=Microsoft Corporation,') {
+            throw "Azure.CodeSigning.Dlib.dll is not validly signed by Microsoft: $($signature.Status)"
+          }
+          $metadata = Join-Path $env:RUNNER_TEMP 'metadata.json'
+          [ordered]@{
+            Endpoint               = '${{ vars.ARTIFACT_SIGNING_ENDPOINT }}'
+            CodeSigningAccountName = '${{ vars.ARTIFACT_SIGNING_ACCOUNT }}'
+            CertificateProfileName = '${{ vars.ARTIFACT_SIGNING_PROFILE }}'
+            ExcludeCredentials     = @('EnvironmentCredential', 'ManagedIdentityCredential', 'WorkloadIdentityCredential')
+          } | ConvertTo-Json | Set-Content -LiteralPath $metadata -Encoding utf8
+          "signtool=$($signtool.FullName)" >> $env:GITHUB_OUTPUT
+          "dlib=$($dlib.FullName)" >> $env:GITHUB_OUTPUT
+          "metadata=$metadata" >> $env:GITHUB_OUTPUT
 
       - name: Azure login using the release environment federation
         uses: azure/login@7ddb5af1ef8758cf1353cf3b42f940aee27ba21c # v3
@@ -110,31 +131,30 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Sign the installer
-        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2
-        with:
-          endpoint: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
-          signing-account-name: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
-          certificate-profile-name: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
-          files: ${{ github.workspace }}\release\SigningSuiteSetup-${{ needs.build.outputs.version }}.exe
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
-          exclude-environment-credential: true
-          exclude-managed-identity-credential: true
-          exclude-workload-identity-credential: true
-          exclude-azure-cli-credential: false
+      # Build-Installer.ps1 downloads every pinned prerequisite, fails on a hash or signature mismatch, and checks that
+      # the finished setup file carries a valid, timestamped signature.
+      - name: Build and sign the installer
+        shell: powershell
+        run: |
+          & .\tools\Build-Installer.ps1 -Version $env:VERSION -Ref $env:RELEASE_TAG -OutputDirectory release `
+            -SignToolPath '${{ steps.tools.outputs.signtool }}' -DlibPath '${{ steps.tools.outputs.dlib }}' -MetadataPath '${{ steps.tools.outputs.metadata }}'
+          if (-not $?) { throw 'Build-Installer.ps1 failed' }
 
-      - name: Verify the signature and write checksums
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: portable-zip
+          path: release
+
+      - name: Check the signatures and write checksums
         shell: pwsh
         run: |
           $exe = "release/SigningSuiteSetup-$env:VERSION.exe"
           $sig = Get-AuthenticodeSignature -LiteralPath $exe
           if ([string]$sig.Status -ne 'Valid') { throw "installer signature is $($sig.Status): $($sig.StatusMessage)" }
           if (-not $sig.TimeStamperCertificate) { throw 'installer signature is not timestamped' }
-          Write-Host "signature ok: $($sig.SignerCertificate.Subject), timestamped by $($sig.TimeStamperCertificate.Subject)"
+          Write-Host "setup signature ok: $($sig.SignerCertificate.Subject), timestamped by $($sig.TimeStamperCertificate.Subject)"
           Push-Location release
-          $lines = Get-ChildItem -File | Where-Object { $_.Name -ne 'checksums.txt' } | Sort-Object Name | ForEach-Object {
+          $lines = Get-ChildItem -File -Filter 'SigningSuite*' | Sort-Object Name | ForEach-Object {
             (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant() + '  ' + $_.Name
           }
           [IO.File]::WriteAllText("$PWD/checksums.txt", (($lines -join "`n") + "`n"))
@@ -144,7 +164,10 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: signed-release
-          path: release/
+          path: |
+            release/SigningSuite-${{ needs.build.outputs.version }}.zip
+            release/SigningSuiteSetup-${{ needs.build.outputs.version }}.exe
+            release/checksums.txt
           if-no-files-found: error
           retention-days: 30
 
