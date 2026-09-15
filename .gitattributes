@@ -9,6 +9,7 @@
 
 /Tests export-ignore
 /tools export-ignore
+/.github export-ignore
 /installer export-ignore
 /screenshots export-ignore
 /RELEASING.md export-ignore

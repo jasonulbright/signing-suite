@@ -28,7 +28,7 @@ Run `SigningSuiteSetup-<version>.exe`. Setup needs administrator rights and an i
 
 Clear any selected component on the **Select Components** page. Uninstall removes the app; prerequisites stay installed.
 
-The installer is not signed. Windows SmartScreen may show "Windows protected your PC"; select **More info**, then **Run anyway**.
+The installer carries a timestamped Authenticode signature; the scripts it installs are not signed. Windows SmartScreen may still show "Windows protected your PC" for a new release; select **More info**, then **Run anyway**.
 
 Silent install (installs every component):
 

@@ -1,0 +1,195 @@
+name: Signed release
+
+# Procedure: RELEASING.md. Builds the portable zip and the installer from a pushed tag, signs the installer with
+# Artifact Signing through the release environment, and either opens a draft release or replaces the installer and
+# checksums on the existing release for that tag.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Pushed tag to release (for example v2026.09.15.0006)
+        required: true
+        type: string
+      headline:
+        description: Release notes headline metric (used only for a new draft release)
+        required: false
+        type: string
+      replace_existing:
+        description: Replace the installer and checksums on the existing release for this tag
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: signed-release-${{ github.event.inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      RELEASE_TAG: ${{ github.event.inputs.tag }}
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Validate the tag
+        shell: pwsh
+        run: |
+          if ($env:RELEASE_TAG -notmatch '^v\d{4}\.\d{2}\.\d{2}\.\d{4}$') { throw 'tag must be vYYYY.MM.DD.####' }
+
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: refs/tags/${{ github.event.inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Match the tag to the module version
+        id: version
+        shell: powershell
+        run: |
+          $version = (Import-PowerShellDataFile -LiteralPath Module\SigningSuite\SigningSuite.psd1).PrivateData.SigningSuiteVersion
+          if ($env:RELEASE_TAG -cne "v$version") { throw "Tag $env:RELEASE_TAG does not match SigningSuiteVersion $version" }
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding ascii
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path -LiteralPath $iscc)) {
+            choco install innosetup --no-progress -y
+            if ($LASTEXITCODE -ne 0) { throw "choco install innosetup failed with exit code $LASTEXITCODE" }
+          }
+          if (-not (Test-Path -LiteralPath $iscc)) { throw "ISCC.exe not found at $iscc" }
+
+      - name: Build the portable zip
+        shell: powershell
+        run: |
+          & .\tools\Build-Release.ps1 -Version '${{ steps.version.outputs.version }}'
+          if (-not $?) { throw 'Build-Release.ps1 failed' }
+
+      # Build-Installer.ps1 downloads every pinned prerequisite and fails on a hash or signature mismatch.
+      - name: Build the installer
+        shell: powershell
+        run: |
+          & .\tools\Build-Installer.ps1 -Version '${{ steps.version.outputs.version }}'
+          if (-not $?) { throw 'Build-Installer.ps1 failed' }
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: unsigned-release
+          path: |
+            dist/SigningSuite-${{ steps.version.outputs.version }}.zip
+            dist/SigningSuiteSetup-${{ steps.version.outputs.version }}.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  sign:
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: unsigned-release
+          path: release
+
+      - name: Azure login using the release environment federation
+        uses: azure/login@7ddb5af1ef8758cf1353cf3b42f940aee27ba21c # v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign the installer
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2
+        with:
+          endpoint: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
+          files: ${{ github.workspace }}\release\SigningSuiteSetup-${{ needs.build.outputs.version }}.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          exclude-environment-credential: true
+          exclude-managed-identity-credential: true
+          exclude-workload-identity-credential: true
+          exclude-azure-cli-credential: false
+
+      - name: Verify the signature and write checksums
+        shell: pwsh
+        run: |
+          $exe = "release/SigningSuiteSetup-$env:VERSION.exe"
+          $sig = Get-AuthenticodeSignature -LiteralPath $exe
+          if ([string]$sig.Status -ne 'Valid') { throw "installer signature is $($sig.Status): $($sig.StatusMessage)" }
+          if (-not $sig.TimeStamperCertificate) { throw 'installer signature is not timestamped' }
+          Write-Host "signature ok: $($sig.SignerCertificate.Subject), timestamped by $($sig.TimeStamperCertificate.Subject)"
+          Push-Location release
+          $lines = Get-ChildItem -File | Where-Object { $_.Name -ne 'checksums.txt' } | Sort-Object Name | ForEach-Object {
+            (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant() + '  ' + $_.Name
+          }
+          [IO.File]::WriteAllText("$PWD/checksums.txt", (($lines -join "`n") + "`n"))
+          Get-Content checksums.txt
+          Pop-Location
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: signed-release
+          path: release/
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    needs: [build, sign]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: refs/tags/${{ github.event.inputs.tag }}
+          persist-credentials: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: signed-release
+          path: release
+
+      - name: Create a draft release or replace the installer on the existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.inputs.tag }}
+          VERSION: ${{ needs.build.outputs.version }}
+          HEADLINE: ${{ github.event.inputs.headline }}
+          REPLACE_EXISTING: ${{ github.event.inputs.replace_existing }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --json tagName >/dev/null 2>&1; then
+            draft=$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)
+            if [ "$draft" != true ] && [ "$REPLACE_EXISTING" != true ]; then
+              echo "Release $RELEASE_TAG is published; run again with replace_existing to replace its installer."
+              exit 1
+            fi
+            gh release upload "$RELEASE_TAG" "release/SigningSuiteSetup-$VERSION.exe" release/checksums.txt --clobber
+            exit 0
+          fi
+          test -n "$HEADLINE" || { echo 'headline is required for a new release'; exit 1; }
+          section=$(awk -v v="## [$VERSION]" 'index($0, v) == 1 { on = 1; next } on && /^## \[/ { exit } on { print }' CHANGELOG.md | tr -d '\r')
+          test -n "$(printf '%s' "$section" | tr -d '[:space:]')" || { echo "CHANGELOG.md has no entry for $VERSION"; exit 1; }
+          base="https://github.com/$GH_REPO/releases/download/$RELEASE_TAG"
+          printf '**Download:** [SigningSuiteSetup-%s.exe](%s/SigningSuiteSetup-%s.exe) (installer) or [SigningSuite-%s.zip](%s/SigningSuite-%s.zip) (portable)\n\n## %s\n%s\n\nFull changelog: CHANGELOG.md\n' \
+            "$VERSION" "$base" "$VERSION" "$VERSION" "$base" "$VERSION" "$HEADLINE" "$section" > notes.md
+          cat notes.md
+          gh release create "$RELEASE_TAG" release/* --verify-tag --draft --title "$RELEASE_TAG" --notes-file notes.md

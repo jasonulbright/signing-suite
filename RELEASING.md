@@ -1,6 +1,6 @@
 # Releasing Signing Suite
 
-A release ships `SigningSuiteSetup-<version>.exe` (Inno Setup installer), `SigningSuite-<version>.zip` (portable) and `checksums.txt`. The scripts and the installer are not signed.
+A release ships `SigningSuiteSetup-<version>.exe` (Inno Setup installer), `SigningSuite-<version>.zip` (portable) and `checksums.txt`. The `Signed release` workflow builds both files and signs the installer. The scripts are not signed. Never publish an installer built on a workstation: it is unsigned.
 
 ## 1. Pick the version
 
@@ -26,7 +26,9 @@ powershell.exe -NoProfile -STA -Command "Invoke-Pester -Path .\Tests"
 
 Office VBA signing tests need the Office SIPs registered and a folder of macro-enabled files named in `SIGNINGSUITE_OFFICE_FIXTURES` (`Macro.xlsm`, `Macro.xls`, `Macro.docm`, `Macro.pptm`, `Macro.ppt`, `NoMacro.xlsm`). `Tests/Tools/New-OfficeFixtures.ps1` creates them with Office. Digest signing and app package tests build `Tests/Native/TestDigestSign.dll` with the Visual Studio C++ tools.
 
-## 4. Commit, tag, build, publish
+## 4. Commit and tag
+
+Update the download links in `README.md` to the new version in the release commit.
 
 ```bash
 git commit -am "Release <version>"
@@ -34,19 +36,45 @@ git tag -a v<version> -m v<version>
 git push origin main v<version>
 ```
 
+Optional local check of both builds (the output is unsigned; do not upload it):
+
 ```powershell
 .\tools\Build-Release.ps1 -Version <version>
 .\tools\Build-Installer.ps1 -Version <version>
 ```
 
-`Build-Release.ps1` archives the tag with `git archive`, refuses a version that differs from the manifest, fails if tests or release tooling reach the zip, and writes `checksums.txt`. `Build-Installer.ps1` needs Inno Setup 6 (`winget install -e --id JRSoftware.InnoSetup`). It packages the same tag, downloads every prerequisite pinned in `installer/SigningSuite.iss`, fails when a hash or Microsoft signature does not match, compiles the installer and adds it to `checksums.txt`. When Microsoft publishes a new prerequisite build, update its URL and SHA256 in `installer/SigningSuite.iss`.
+`Build-Release.ps1` archives the tag with `git archive`, refuses a version that differs from the manifest, fails if tests or release tooling reach the zip, and writes `checksums.txt`. `Build-Installer.ps1` needs Inno Setup 6. It packages the same tag, downloads every prerequisite pinned in `installer/SigningSuite.iss`, fails when a hash or Microsoft signature does not match, compiles the installer and adds it to `checksums.txt`. When Microsoft publishes a new prerequisite build, update its URL and SHA256 in `installer/SigningSuite.iss`.
 
-Release notes: title is the tag. The first line is the download link, then a `##` headline with one concrete outcome, `###` sections by kind of change, and the footer `Full changelog: CHANGELOG.md`.
+## 5. Run the signed build
 
 ```bash
-gh release create v<version> --title v<version> --notes-file notes.md
-gh release upload v<version> dist/SigningSuiteSetup-<version>.exe dist/SigningSuite-<version>.zip dist/checksums.txt
+gh workflow run release.yml -R jasonulbright/signing-suite --ref main -f tag=v<version> -f headline="<one concrete outcome>"
+gh run watch -R jasonulbright/signing-suite $(gh run list -R jasonulbright/signing-suite --workflow release.yml -L 1 --json databaseId --jq '.[0].databaseId')
+```
+
+The workflow:
+
+1. Checks that the tag equals `SigningSuiteVersion` in the module manifest.
+2. Installs Inno Setup and runs `Build-Release.ps1` and `Build-Installer.ps1` on the tag.
+3. Signs the installer with Artifact Signing through the `release` environment, then checks that the signature is valid and timestamped.
+4. Writes `checksums.txt` for the zip and the signed installer.
+5. Creates a **draft** release titled with the tag. The notes are the download line, the headline, the changelog entry for the version and `Full changelog: CHANGELOG.md`.
+
+To replace the installer on an already published release (same tag, same files, signed), add `-f replace_existing=true`; the headline is not used.
+
+The `release` environment holds the secrets `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` and `AZURE_SUBSCRIPTION_ID`, and the variables `ARTIFACT_SIGNING_ENDPOINT`, `ARTIFACT_SIGNING_ACCOUNT` and `ARTIFACT_SIGNING_PROFILE`. The Entra app needs a federated credential whose subject matches the ID-based subject GitHub sends for this repository with `:environment:release` appended:
+
+```bash
+gh api repos/jasonulbright/signing-suite/actions/oidc/customization/sub
+```
+
+## 6. Publish
+
+Review the draft, then publish it and check the assets:
+
+```bash
+gh release edit v<version> -R jasonulbright/signing-suite --draft=false
 gh api repos/jasonulbright/signing-suite/releases/tags/v<version> --jq '.assets[].name'
 ```
 
-Update the download link in `README.md` to the new asset in the release commit.
+Release notes rules: title is the tag, one `##` headline with a concrete outcome, `###` sections by kind of change, footer `Full changelog: CHANGELOG.md`.
