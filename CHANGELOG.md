@@ -28,3 +28,8 @@
 - Verify signatures, including signature and timestamp counts.
 - Export results to CSV.
 - Cancel scans, signing and verification between files.
+
+### Command line
+
+- Sign or verify from a build pipeline, failing the step when a file fails.
+- Preview what would be signed with -WhatIf.

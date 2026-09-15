@@ -102,6 +102,26 @@ A signature is trusted only where the certificate chains to a trusted root and, 
 
 References: [Trusted publishers for Office files](https://learn.microsoft.com/microsoft-365-apps/security/trusted-publisher), [SignTool](https://learn.microsoft.com/windows/win32/seccrypto/signtool), [Sign an MSIX package](https://learn.microsoft.com/windows/msix/package/signing-package-overview).
 
+## Command line
+
+`Invoke-SigningSuite.ps1` signs or verifies without the window and writes one result object per file. It exits with 1 when any file failed, so a build step fails with it. `-WhatIf` lists what would be signed.
+
+```powershell
+# Certificate store, RFC 3161 timestamp
+powershell.exe -NoProfile -File .\Invoke-SigningSuite.ps1 -Path .\out -CertificateThumbprint <thumbprint> -TimestampMode Rfc3161 -TimestampServer http://timestamp.digicert.com
+
+# Artifact Signing
+pwsh -NoProfile -File .\Invoke-SigningSuite.ps1 -Path .\out\App.msix -ArtifactSigningMetadata .\metadata.json -TimestampMode Rfc3161 -TimestampServer http://timestamp.acs.microsoft.com
+
+# Digest signing library with its certificate
+pwsh -NoProfile -File .\Invoke-SigningSuite.ps1 -Path .\out -DlibPath C:\Tools\Hsm.Dlib.dll -DlibMetadata .\hsm.json -CertificateFile .\signer.cer
+
+# Verify; exits 1 when a signature is invalid or unreadable
+pwsh -NoProfile -File .\Invoke-SigningSuite.ps1 -Path .\out -Verify
+```
+
+The other options match the window: `-Engine`, `-DigestAlgorithm`, `-DualSign`, `-SkipValid`, `-ClearOfficeSignatures`, `-Description`, `-DescriptionUrl`, `-SignToolPath`.
+
 ## Module
 
 `Module\SigningSuite` holds everything except the window and works on its own:
@@ -127,6 +147,7 @@ Requires Pester 5. Tests never write to a certificate store: they sign with thro
 
 ```
 start-signingsuite.ps1          # WPF entry script
+Invoke-SigningSuite.ps1         # Command-line signing and verification
 MainWindow.xaml                 # Main window
 Module/SigningSuite/            # Signing, scanning, verification, settings
     SigningSuite.psd1

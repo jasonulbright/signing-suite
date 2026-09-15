@@ -9,7 +9,9 @@
     CompatiblePSEditions = @('Desktop', 'Core')
     FunctionsToExport    = @(
         'Clear-OfficeVbaSignature'
+        'ConvertFrom-SignToolOutput'
         'ConvertTo-CommandLineArgument'
+        'ConvertTo-SafeCsvField'
         'ConvertTo-SignatureText'
         'Find-ArtifactSigningDlib'
         'Find-SignableFile'
@@ -30,6 +32,7 @@
         'Import-PfxToUserStore'
         'Invoke-ExternalProcess'
         'Invoke-FileSigning'
+        'Invoke-SigningBatch'
         'Invoke-SignTool'
         'New-ArtifactSigningMetadata'
         'New-SignToolSignArgument'
