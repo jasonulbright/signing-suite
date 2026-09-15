@@ -393,10 +393,42 @@ public static string[] Split(string commandLine)
         $script:signTool.Source | Should -BeIn 'WindowsSdk', 'Path'
     }
 
-    It 'prefers a configured signtool path' {
-        $fake = Join-Path $TestDrive 'signtool.exe'
+    It 'prefers a configured signtool path that carries a valid signature' -Skip:(-not $script:signToolAvailable) {
+        $copy = Join-Path $TestDrive 'configured\signtool.exe'
+        [void][System.IO.Directory]::CreateDirectory((Split-Path -Parent $copy))
+        [System.IO.File]::Copy($script:signTool.Path, $copy, $true)
+        (Find-SignTool -ConfiguredPath $copy).Source | Should -Be 'Configured'
+    }
+
+    It 'ignores a configured signtool path without a valid signature' {
+        $fake = Join-Path $TestDrive 'unsigned\signtool.exe'
+        [void][System.IO.Directory]::CreateDirectory((Split-Path -Parent $fake))
         New-TestPortableExecutable -Path $fake
-        (Find-SignTool -ConfiguredPath $fake).Source | Should -Be 'Configured'
+        $found = Find-SignTool -ConfiguredPath $fake -WarningAction SilentlyContinue
+        if ($found) {
+            $found.Source | Should -Not -Be 'Configured'
+        }
+    }
+
+    It 'joins signtool messages wrapped onto indented lines' {
+        $text = "Done Adding Additional Store`r`nSignTool Error: A certificate chain processed, but terminated in a root`r`n`tcertificate which is not trusted by the trust provider.`r`n`r`nSignTool Warning: Signing succeeded, but an error occurred.`r`nSignTool Error: An error occurred while attempting to sign: C:\x.ps1`r`n"
+        $messages = ConvertFrom-SignToolOutput -Text $text
+        $messages.Errors | Should -Be @('A certificate chain processed, but terminated in a root certificate which is not trusted by the trust provider.', 'An error occurred while attempting to sign: C:\x.ps1')
+        $messages.Warnings | Should -Be @('Signing succeeded, but an error occurred.')
+    }
+}
+
+Describe 'CSV export values' {
+
+    It 'neutralizes <Value>' -ForEach @(
+        @{ Value = '=cmd|calc!A1.exe'; Expected = "'=cmd|calc!A1.exe" }
+        @{ Value = '+1.ps1'; Expected = "'+1.ps1" }
+        @{ Value = '-dash.ps1'; Expected = "'-dash.ps1" }
+        @{ Value = '@x.vbs'; Expected = "'@x.vbs" }
+        @{ Value = 'plain.ps1'; Expected = 'plain.ps1' }
+        @{ Value = ''; Expected = '' }
+    ) {
+        ConvertTo-SafeCsvField -Value $Value | Should -BeExactly $Expected
     }
 }
 
@@ -408,6 +440,28 @@ Describe 'External processes' {
         $run.TimedOut | Should -BeFalse
         $run.ExitCode | Should -Be 3
         ($run.Output -split "`n").Count | Should -BeGreaterThan 5000
+    }
+
+    It 'returns when a child process keeps the output pipes open' {
+        $marker = 'SigningSuiteOrphan' + [guid]::NewGuid().ToString('N')
+        $cmd = Join-Path $env:windir 'System32\cmd.exe'
+        $powershell = Join-Path $env:windir 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        # cmd.exe does not read CommandLineToArgvW escapes, so the start /b line lives in a batch file; start /b children inherit the pipes.
+        $batch = Join-Path $TestDrive 'orphan.cmd'
+        [System.IO.File]::WriteAllText($batch, "@echo off`r`nstart /b `"`" `"$powershell`" -NoProfile -Command `"Start-Sleep -Seconds 60; '$marker'`"`r`necho started`r`n")
+        $watch = [System.Diagnostics.Stopwatch]::StartNew()
+        try {
+            $run = Invoke-ExternalProcess -FilePath $cmd -ArgumentList @('/d', '/c', $batch) -TimeoutSeconds 30
+            $watch.Stop()
+            $watch.Elapsed.TotalSeconds | Should -BeLessThan 25
+            $run.TimedOut | Should -BeFalse
+            $run.StreamsClosed | Should -BeFalse
+            $run.Output | Should -BeLike 'started*'
+        }
+        finally {
+            Get-CimInstance -ClassName Win32_Process -Filter "Name = 'powershell.exe'" | Where-Object { $_.CommandLine -like "*$marker*" } |
+                ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+        }
     }
 
     It 'kills a process that exceeds the timeout' {
@@ -578,6 +632,14 @@ Describe 'Signing with the PowerShell engine' {
         $result.Status | Should -Be 'Failed'
         $result.Detail | Should -BeLike 'RFC 3161 timestamps need the SignTool engine*'
         (Get-FileSignatureState -LiteralPath $path).State | Should -Be 'NotSigned'
+    }
+
+    It 'fails a file signed without the timestamp that was asked for' {
+        $path = Join-Path $script:psRoot 'no-timestamp.ps1'
+        [System.IO.File]::WriteAllText($path, "Write-Output 1`r`n")
+        $result = Invoke-FileSigning -LiteralPath $path -Engine PowerShell -Certificate $script:certificate -TimestampMode Authenticode -TimestampServer 'http://127.0.0.1:9/'
+        $result.Status | Should -Be 'Failed'
+        $result.Detail | Should -BeLike 'The file was signed without the requested timestamp*'
     }
 
     It 'reports a missing file and a timestamp request without a server' {

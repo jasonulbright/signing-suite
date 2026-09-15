@@ -57,12 +57,21 @@ function Get-FileSignatureState {
     }
 
     $nameType = [System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName
-    [pscustomobject]@{
-        State       = $state
-        StatusCode  = '0x{0:X8}' -f $code
-        Signer      = if ($result.Signer) { $result.Signer.GetNameInfo($nameType, $false) } else { $null }
-        Thumbprint  = if ($result.Signer) { $result.Signer.Thumbprint } else { $null }
-        Timestamped = [bool]$result.Timestamped
-        Message     = $message
+    try {
+        [pscustomobject]@{
+            State       = $state
+            StatusCode  = '0x{0:X8}' -f $code
+            Signer      = if ($result.Signer) { $result.Signer.GetNameInfo($nameType, $false) } else { $null }
+            Thumbprint  = if ($result.Signer) { $result.Signer.Thumbprint } else { $null }
+            Timestamped = [bool]$result.Timestamped
+            Message     = $message
+        }
+    }
+    finally {
+        foreach ($certificate in $result.Signer, $result.TimestampSigner) {
+            if ($certificate) {
+                $certificate.Dispose()
+            }
+        }
     }
 }

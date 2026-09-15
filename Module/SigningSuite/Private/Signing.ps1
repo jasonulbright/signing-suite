@@ -267,10 +267,7 @@ function Invoke-FileSigning {
         if (-not $SignToolPath -or -not [System.IO.File]::Exists($SignToolPath)) {
             return New-SigningResult -Path $LiteralPath -Status 'Failed' -Detail 'signtool.exe was not found. Install the Windows SDK signing tools or set the signtool path.'
         }
-        $thumbprint = if ($Certificate -and -not $DlibPath) { $Certificate.Thumbprint } else { $null }
-        if ($DlibPath -and $Certificate -and -not $CertificateFile) {
-            $thumbprint = $Certificate.Thumbprint
-        }
+        $thumbprint = if ($Certificate -and -not $CertificateFile) { $Certificate.Thumbprint } else { $null }
 
         $plan = [System.Collections.Generic.List[hashtable]]::new()
         $common = @{
@@ -346,10 +343,10 @@ function Invoke-FileSigning {
         return New-SigningResult -Path $LiteralPath -Status 'Failed' -Passes $completed -Signature $state -Detail "The file carries a signature from $($state.Signer), not the selected certificate."
     }
 
-    $summary = if ($state.State -eq 'Valid') { 'Signed and verified.' } else { "Signed; not trusted on this PC: $($state.Message)" }
     if ($TimestampMode -ne 'None' -and -not $state.Timestamped) {
-        $notes.Insert(0, 'No timestamp was added.')
+        return New-SigningResult -Path $LiteralPath -Status 'Failed' -Passes $completed -Signature $state -Detail "The file was signed without the requested timestamp; $TimestampServer could not be reached or refused the request. Sign again when the server is reachable, or choose no timestamp."
     }
+    $summary = if ($state.State -eq 'Valid') { 'Signed and verified.' } else { "Signed; not trusted on this PC: $($state.Message)" }
     $notes.Insert(0, $summary)
     New-SigningResult -Path $LiteralPath -Status 'Signed' -Passes $completed -Signature $state -Detail ($notes -join ' ')
 }

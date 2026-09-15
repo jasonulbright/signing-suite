@@ -84,6 +84,29 @@ function ConvertTo-SignatureText {
     }
 }
 
+function ConvertTo-SafeCsvField {
+    <#
+    .SYNOPSIS
+        Prefixes a value that a spreadsheet would evaluate as a formula with an apostrophe.
+    .DESCRIPTION
+        File names are chosen by whoever produced the files; a name that starts with =, +, -, @, tab or carriage return
+        runs as a formula when the exported CSV is opened in Excel.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [AllowNull()]
+        [AllowEmptyString()]
+        [object]$Value
+    )
+
+    $text = [string]$Value
+    if ($text.Length -gt 0 -and "=+-@`t`r".IndexOf($text[0]) -ge 0) {
+        return "'" + $text
+    }
+    $text
+}
+
 function New-ArtifactSigningMetadata {
     <#
     .SYNOPSIS

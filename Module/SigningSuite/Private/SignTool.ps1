@@ -23,9 +23,16 @@ function Find-SignTool {
 
     if ($ConfiguredPath) {
         if ([System.IO.File]::Exists($ConfiguredPath)) {
-            return New-SignToolInfo -Path $ConfiguredPath -Source 'Configured'
+            # The path comes from a per-user settings file; an unsigned or tampered binary there would run with every signing pass.
+            $signature = Get-FileSignatureState -LiteralPath $ConfiguredPath
+            if ($signature.State -eq 'Valid') {
+                return New-SignToolInfo -Path $ConfiguredPath -Source 'Configured'
+            }
+            Write-Warning "The configured signtool path is ignored because it does not carry a valid signature: $ConfiguredPath"
         }
-        Write-Verbose "Configured signtool path does not exist: $ConfiguredPath"
+        else {
+            Write-Verbose "Configured signtool path does not exist: $ConfiguredPath"
+        }
     }
 
     $roots = [System.Collections.Generic.List[string]]::new()
@@ -282,16 +289,60 @@ function Invoke-SignTool {
     )
 
     $run = Invoke-ExternalProcess -FilePath $SignToolPath -ArgumentList $ArgumentList -TimeoutSeconds $TimeoutSeconds -Environment $Environment
-    $lines = ($run.Output + "`n" + $run.Error) -split "`r?`n"
-    $errors = @($lines | Where-Object { $_ -match '^\s*SignTool Error:' } | ForEach-Object { ($_ -replace '^\s*SignTool Error:\s*', '').Trim() })
-    $warnings = @($lines | Where-Object { $_ -match '^\s*SignTool Warning:' } | ForEach-Object { ($_ -replace '^\s*SignTool Warning:\s*', '').Trim() })
+    $messages = ConvertFrom-SignToolOutput -Text ($run.Output + "`n" + $run.Error)
 
     [pscustomobject]@{
         ExitCode = $run.ExitCode
         TimedOut = $run.TimedOut
         Output   = $run.Output
         Error    = $run.Error
-        Errors   = $errors
-        Warnings = $warnings
+        Errors   = $messages.Errors
+        Warnings = $messages.Warnings
+    }
+}
+
+function ConvertFrom-SignToolOutput {
+    <#
+    .SYNOPSIS
+        Extracts "SignTool Error:" and "SignTool Warning:" messages, joining the indented lines signtool wraps them onto.
+    #>
+    [CmdletBinding()]
+    param(
+        [AllowEmptyString()]
+        [string]$Text
+    )
+
+    $errors = [System.Collections.Generic.List[string]]::new()
+    $warnings = [System.Collections.Generic.List[string]]::new()
+    $current = $null
+    $target = $null
+    foreach ($line in ($Text -split "`r?`n")) {
+        if ($line -match '^\s*SignTool (Error|Warning):\s*(.*)$') {
+            if ($null -ne $current) {
+                $target.Add($current.Trim())
+            }
+            # Assigned in branches: an if-expression would enumerate an empty list into $null.
+            if ($Matches[1] -eq 'Error') {
+                $target = $errors
+            }
+            else {
+                $target = $warnings
+            }
+            $current = $Matches[2]
+        }
+        elseif ($null -ne $current -and $line -match '^\s+\S') {
+            $current += ' ' + $line.Trim()
+        }
+        elseif ($null -ne $current) {
+            $target.Add($current.Trim())
+            $current = $null
+        }
+    }
+    if ($null -ne $current) {
+        $target.Add($current.Trim())
+    }
+    [pscustomobject]@{
+        Errors   = [string[]]$errors.ToArray()
+        Warnings = [string[]]$warnings.ToArray()
     }
 }

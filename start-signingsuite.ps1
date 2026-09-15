@@ -817,7 +817,7 @@ function Get-SigningCandidates {
         if ($row.Status -ne 'Ready' -and $row.Status -ne 'Failed') {
             continue
         }
-        if ($skipValid -and $row.SignatureState -eq 'Valid') {
+        if ($skipValid -and $row.Status -eq 'Ready' -and $row.SignatureState -eq 'Valid') {
             $skippedValid++
             continue
         }
@@ -1404,7 +1404,14 @@ function Export-Results {
     if ($dialog.ShowDialog($script:MainWindow) -ne $true) {
         return
     }
-    $rows | Select-Object Status, Name, Format, @{ Name = 'Signature'; Expression = { $_.SignatureText } }, SignerThumbprint, Detail, Folder, Path |
+    $rows | Select-Object Status,
+        @{ Name = 'Name'; Expression = { ConvertTo-SafeCsvField $_.Name } },
+        Format,
+        @{ Name = 'Signature'; Expression = { ConvertTo-SafeCsvField $_.SignatureText } },
+        SignerThumbprint,
+        @{ Name = 'Detail'; Expression = { ConvertTo-SafeCsvField $_.Detail } },
+        @{ Name = 'Folder'; Expression = { ConvertTo-SafeCsvField $_.Folder } },
+        @{ Name = 'Path'; Expression = { ConvertTo-SafeCsvField $_.Path } } |
         Export-Csv -LiteralPath $dialog.FileName -NoTypeInformation -Encoding UTF8
     $script:ui.SummaryText.Text = "Exported $($rows.Count) rows to $($dialog.FileName)"
 }
