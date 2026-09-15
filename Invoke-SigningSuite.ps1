@@ -1,4 +1,5 @@
 #Requires -Version 5.1
+#Requires -PSEdition Desktop
 <#
 .SYNOPSIS
     Signs or verifies files without the window, for build pipelines and scheduled jobs.
@@ -33,7 +34,7 @@
     powershell.exe -NoProfile -File .\Invoke-SigningSuite.ps1 -Path .\out -CertificateThumbprint 0123456789ABCDEF0123456789ABCDEF01234567 -TimestampMode Rfc3161 -TimestampServer http://timestamp.digicert.com
 
 .EXAMPLE
-    pwsh -NoProfile -File .\Invoke-SigningSuite.ps1 -Path .\out\App.msix -ArtifactSigningMetadata .\metadata.json -TimestampMode Rfc3161 -TimestampServer http://timestamp.acs.microsoft.com
+    powershell.exe -NoProfile -File .\Invoke-SigningSuite.ps1 -Path .\out\App.msix -ArtifactSigningMetadata .\metadata.json -TimestampMode Rfc3161 -TimestampServer http://timestamp.acs.microsoft.com
 
 .NOTES
     ScriptName : Invoke-SigningSuite.ps1
@@ -88,6 +89,24 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+#region Environment
+# Windows PowerShell started from some PowerShell 7 sessions keeps the 7.x module folders in PSModulePath. Importing
+# Microsoft.PowerShell.Security then fails with "The member AuditToString is already present", and
+# Import-PowerShellDataFile goes missing.
+$env:PSModulePath = (@(
+        @($env:PSModulePath -split ';') +
+        @([Environment]::GetEnvironmentVariable('PSModulePath', 'User') -split ';') +
+        @([Environment]::GetEnvironmentVariable('PSModulePath', 'Machine') -split ';') +
+        @((Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'WindowsPowerShell\Modules'), (Join-Path $env:ProgramFiles 'WindowsPowerShell\Modules'), (Join-Path $PSHOME 'Modules')) |
+        Where-Object { $_ -and $_ -notmatch '(?<!Windows)PowerShell\\(7|Modules)' -and $_ -notmatch '\\Microsoft\.PowerShell_' } |
+        ForEach-Object -Begin { $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase) } -Process {
+            $folder = $_.TrimEnd('\')
+            if ($seen.Add($folder)) { $folder }
+        }
+    ) -join ';')
+#endregion
+
 Import-Module -Name Microsoft.PowerShell.Security
 Import-Module -Name (Join-Path $PSScriptRoot 'Module\SigningSuite\SigningSuite.psd1') -Force
 
@@ -95,12 +114,22 @@ $tool = Find-SignTool -ConfiguredPath $SignToolPath
 $toolPath = if ($tool) { $tool.Path } else { '' }
 
 if ($Verify) {
+    $signingOnly = @('Engine', 'DigestAlgorithm', 'TimestampMode', 'TimestampServer', 'DualSign', 'SkipValid', 'ClearOfficeSignatures', 'Description', 'DescriptionUrl')
+    $ignored = @($PSBoundParameters.Keys | Where-Object { $signingOnly -contains $_ })
+    if ($ignored.Count -gt 0) {
+        Write-Error "These options apply to signing, not to -Verify: -$($ignored -join ', -')" -ErrorAction Continue
+        exit 2
+    }
     $unreadable = 0
     $results = @(Find-SignableFile -Path $Path -UnreadableCount ([ref]$unreadable) | ForEach-Object { Test-FileSignature -LiteralPath $_ -SignToolPath $toolPath })
     if ($unreadable -gt 0) {
         Write-Warning "$unreadable path(s) could not be read (access denied, missing, or path too long)."
     }
     $results
+    if ($results.Count -eq 0) {
+        Write-Error 'No signable files were found.' -ErrorAction Continue
+        exit 1
+    }
     if (@($results | Where-Object { $_.State -in 'Invalid', 'Unknown' }).Count -gt 0) {
         exit 1
     }
@@ -147,6 +176,10 @@ switch ($PSCmdlet.ParameterSetName) {
 
 $results = @(Invoke-SigningBatch @batch)
 $results
+if ($results.Count -eq 0) {
+    Write-Error 'No signable files were found.' -ErrorAction Continue
+    exit 1
+}
 if (@($results | Where-Object Status -eq 'Failed').Count -gt 0) {
     exit 1
 }

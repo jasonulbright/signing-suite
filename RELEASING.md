@@ -18,11 +18,10 @@ gh release list -R jasonulbright/signing-suite
 
 ## 3. Test
 
-Run both hosts with Pester 5. Any failure stops the release.
+Run the tests in Windows PowerShell 5.1 with Pester 5. Any failure stops the release. PowerShell 7 is not a supported host.
 
 ```powershell
 powershell.exe -NoProfile -STA -Command "Invoke-Pester -Path .\Tests"
-pwsh -NoProfile -Command "Invoke-Pester -Path .\Tests"
 ```
 
 Office VBA signing tests need the Office SIPs registered and a folder of macro-enabled files named in `SIGNINGSUITE_OFFICE_FIXTURES` (`Macro.xlsm`, `Macro.xls`, `Macro.docm`, `Macro.pptm`, `Macro.ppt`, `NoMacro.xlsm`). `Tests/Tools/New-OfficeFixtures.ps1` creates them with Office. Digest signing and app package tests build `Tests/Native/TestDigestSign.dll` with the Visual Studio C++ tools.

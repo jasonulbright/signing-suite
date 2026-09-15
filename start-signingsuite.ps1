@@ -26,20 +26,39 @@
 #>
 [CmdletBinding()]
 param(
+    [Parameter(Position = 0, ValueFromRemainingArguments)]
     [string[]]$Path
 )
+
+if ($PSVersionTable.PSEdition -ne 'Desktop') {
+    $relaunch = @('-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"")
+    foreach ($entry in $Path) {
+        $relaunch += "`"$entry`""
+    }
+    Start-Process -FilePath (Join-Path $env:windir 'System32\WindowsPowerShell\v1.0\powershell.exe') -ArgumentList $relaunch
+    return
+}
 
 if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -ne [System.Threading.ApartmentState]::STA) {
     throw "WPF requires a single-threaded apartment. Start the tool with: powershell.exe -STA -File `"$PSCommandPath`""
 }
 
-# A Windows PowerShell process started from PowerShell 7 inherits the 7.x module folders, and runspaces then autoload
-# 7.x builds of Microsoft.PowerShell.Security that fail to load in Windows PowerShell.
-if ($PSVersionTable.PSEdition -eq 'Desktop' -and $env:PSModulePath) {
-    $env:PSModulePath = (@($env:PSModulePath -split ';' | Where-Object {
-                $_ -and $_ -notmatch '\\PowerShell\\7' -and $_ -notmatch '\\Documents\\PowerShell\\Modules' -and $_ -notmatch '\\Program Files\\PowerShell\\Modules'
-            }) -join ';')
-}
+#region Environment
+# Windows PowerShell started from some PowerShell 7 sessions keeps the 7.x module folders in PSModulePath. Importing
+# Microsoft.PowerShell.Security then fails with "The member AuditToString is already present", and
+# Import-PowerShellDataFile goes missing.
+$env:PSModulePath = (@(
+        @($env:PSModulePath -split ';') +
+        @([Environment]::GetEnvironmentVariable('PSModulePath', 'User') -split ';') +
+        @([Environment]::GetEnvironmentVariable('PSModulePath', 'Machine') -split ';') +
+        @((Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'WindowsPowerShell\Modules'), (Join-Path $env:ProgramFiles 'WindowsPowerShell\Modules'), (Join-Path $PSHOME 'Modules')) |
+        Where-Object { $_ -and $_ -notmatch '(?<!Windows)PowerShell\\(7|Modules)' -and $_ -notmatch '\\Microsoft\.PowerShell_' } |
+        ForEach-Object -Begin { $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase) } -Process {
+            $folder = $_.TrimEnd('\')
+            if ($seen.Add($folder)) { $folder }
+        }
+    ) -join ';')
+#endregion
 
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Windows.Forms
 Import-Module -Name Microsoft.PowerShell.Security
@@ -740,6 +759,7 @@ function ConvertTo-FileRow {
         SignatureState   = $Info.SignatureState
         Signer           = $Info.Signer
         SignerThumbprint = $Info.SignerThumbprint
+        Timestamped      = [bool]$Info.Timestamped
         SignatureText    = ConvertTo-SignatureText -State $Info.SignatureState -Signer $Info.Signer
         Detail           = $Info.Detail
         Folder           = $Info.Folder
@@ -811,13 +831,17 @@ function Get-VisibleRows {
 
 function Get-SigningCandidates {
     $skipValid = [bool]$script:ui.SkipValidCheck.IsChecked
+    $timestampMode = Get-ComboTag -Combo $script:ui.TimestampModeCombo
+    if ($timestampMode -notin 'None', 'Rfc3161', 'Authenticode') {
+        $timestampMode = 'None'
+    }
     $pending = @()
     $skippedValid = 0
     foreach ($row in Get-VisibleRows) {
         if ($row.Status -ne 'Ready' -and $row.Status -ne 'Failed') {
             continue
         }
-        if ($skipValid -and $row.Status -eq 'Ready' -and $row.SignatureState -eq 'Valid') {
+        if ($skipValid -and $row.Status -eq 'Ready' -and (Test-SkipValidSignature -SignatureState $row.SignatureState -Timestamped ([bool]$row.Timestamped) -TimestampMode $timestampMode)) {
             $skippedValid++
             continue
         }
@@ -1295,6 +1319,7 @@ function Invoke-Signing {
             SignatureState   = if ($result.SignatureState) { $result.SignatureState } else { $script:Rows[$script:RowIndex[$result.Path]].SignatureState }
             Signer           = if ($result.SignatureState) { $result.Signer } else { $script:Rows[$script:RowIndex[$result.Path]].Signer }
             SignerThumbprint = if ($result.SignatureState) { $result.SignerThumbprint } else { $script:Rows[$script:RowIndex[$result.Path]].SignerThumbprint }
+            Timestamped      = if ($result.SignatureState) { [bool]$result.Timestamped } else { [bool]$script:Rows[$script:RowIndex[$result.Path]].Timestamped }
         }
         $stats = $script:SignStats
         $stats.Done++
@@ -1364,6 +1389,7 @@ function Invoke-Verify {
             SignatureState   = $verification.State
             Signer           = $verification.Signer
             SignerThumbprint = $verification.SignerThumbprint
+            Timestamped      = [bool]$verification.Timestamped
             Detail           = $verification.Detail
         }
         $stats = $script:SignStats

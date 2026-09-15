@@ -510,6 +510,16 @@ Describe 'Engine selection' {
         (Resolve-SigningEngine -Provider $script:powerShellProvider -Requested PowerShell -SignToolAvailable $true -TimestampMode Authenticode).Engine | Should -Be 'PowerShell'
     }
 
+    It 'skips a valid signature only when it has the timestamp the run asks for: <Case>' -ForEach @(
+        @{ Case = 'valid, no timestamp asked'; State = 'Valid'; Timestamped = $false; Mode = 'None'; Expected = $true }
+        @{ Case = 'valid and timestamped'; State = 'Valid'; Timestamped = $true; Mode = 'Rfc3161'; Expected = $true }
+        @{ Case = 'valid without the asked timestamp'; State = 'Valid'; Timestamped = $false; Mode = 'Authenticode'; Expected = $false }
+        @{ Case = 'untrusted'; State = 'Untrusted'; Timestamped = $true; Mode = 'None'; Expected = $false }
+        @{ Case = 'not signed'; State = 'NotSigned'; Timestamped = $false; Mode = 'None'; Expected = $false }
+    ) {
+        Test-SkipValidSignature -SignatureState $State -Timestamped $Timestamped -TimestampMode $Mode | Should -Be $Expected
+    }
+
     It 'shortens signature states for the file list' {
         ConvertTo-SignatureText -State 'Valid' -Signer 'Contoso' | Should -Be 'Valid: Contoso'
         ConvertTo-SignatureText -State 'NotSigned' -Signer $null | Should -Be 'Not signed'

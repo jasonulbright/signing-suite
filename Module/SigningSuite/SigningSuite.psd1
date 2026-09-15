@@ -6,7 +6,7 @@
     Copyright            = '(c) Jason Ulbright. All rights reserved.'
     Description          = 'Authenticode signing for scripts, executables, installers, catalogs, app packages and Office VBA projects.'
     PowerShellVersion    = '5.1'
-    CompatiblePSEditions = @('Desktop', 'Core')
+    CompatiblePSEditions = @('Desktop')
     FunctionsToExport    = @(
         'Clear-OfficeVbaSignature'
         'ConvertFrom-SignToolOutput'
@@ -42,6 +42,7 @@
         'Test-CodeSigningUsage'
         'Test-FileSignature'
         'Test-OfficeVbaProject'
+        'Test-SkipValidSignature'
         'Test-SipRegistered'
     )
     CmdletsToExport      = @()

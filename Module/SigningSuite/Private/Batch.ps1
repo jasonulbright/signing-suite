@@ -110,7 +110,7 @@ function Invoke-SigningBatch {
             [pscustomobject]$result
             continue
         }
-        if ($SkipValid -and $info.SignatureState -eq 'Valid') {
+        if ($SkipValid -and (Test-SkipValidSignature -SignatureState $info.SignatureState -Timestamped ([bool]$info.Timestamped) -TimestampMode $TimestampMode)) {
             $result.Status = 'Skipped'
             $result.Detail = "Already has a valid signature from $($info.Signer)."
             [pscustomobject]$result

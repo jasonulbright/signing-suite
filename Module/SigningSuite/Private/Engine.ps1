@@ -84,6 +84,29 @@ function ConvertTo-SignatureText {
     }
 }
 
+function Test-SkipValidSignature {
+    <#
+    .SYNOPSIS
+        Decides whether "skip files that already have a valid signature" leaves a file alone.
+    .DESCRIPTION
+        A valid signature without the timestamp a run asks for is not skipped: a run that failed on an unreachable
+        timestamp server leaves such a file behind, and skipping it would hide the missing timestamp for good.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [AllowEmptyString()]
+        [string]$SignatureState,
+
+        [bool]$Timestamped,
+
+        [ValidateSet('None', 'Rfc3161', 'Authenticode')]
+        [string]$TimestampMode = 'None'
+    )
+
+    $SignatureState -eq 'Valid' -and ($TimestampMode -eq 'None' -or $Timestamped)
+}
+
 function ConvertTo-SafeCsvField {
     <#
     .SYNOPSIS

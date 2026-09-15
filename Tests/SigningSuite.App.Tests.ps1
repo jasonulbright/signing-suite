@@ -95,6 +95,37 @@ Describe 'Source files' {
         $changelogVersion | Should -Be $manifestVersion
     }
 
+    It 'repairs a PSModulePath inherited from PowerShell 7 in <Name>' -ForEach @(
+        @{ Name = 'start-signingsuite.ps1' }
+        @{ Name = 'Invoke-SigningSuite.ps1' }
+    ) {
+        $text = [System.IO.File]::ReadAllText((Join-Path $script:repoRoot $Name))
+        $region = [regex]::Match($text, '(?s)#region Environment\r?\n(.*?)#endregion')
+        $region.Success | Should -BeTrue
+        $probe = Join-Path $TestDrive "probe-$Name"
+        [System.IO.File]::WriteAllText($probe, $region.Groups[1].Value + @'
+try { Import-Module Microsoft.PowerShell.Security -ErrorAction Stop; 'security-ok' } catch { 'security-failed' }
+if (Get-Command Import-PowerShellDataFile -ErrorAction SilentlyContinue) { 'datafile-ok' } else { 'datafile-missing' }
+'@)
+        $inherited = @(
+            (Join-Path $env:USERPROFILE 'Documents\PowerShell\Modules')
+            'C:\Program Files\PowerShell\Modules'
+            'c:\program files\windowsapps\microsoft.powershell_7.6.6.0_x64__8wekyb3d8bbwe\Modules'
+            'C:\Program Files\PowerShell\7\Modules'
+            $env:PSModulePath
+        ) -join ';'
+        $saved = $env:PSModulePath
+        try {
+            $env:PSModulePath = $inherited
+            $output = & (Join-Path $env:windir 'System32\WindowsPowerShell\v1.0\powershell.exe') -NoProfile -ExecutionPolicy Bypass -File $probe 2>&1
+        }
+        finally {
+            $env:PSModulePath = $saved
+        }
+        $output | Should -Contain 'security-ok'
+        $output | Should -Contain 'datafile-ok'
+    }
+
     It 'keeps tests, native test sources and release tooling out of the release archive' {
         $attributes = [System.IO.File]::ReadAllText((Join-Path $script:repoRoot '.gitattributes'))
         foreach ($pattern in '/Tests', '/tools', '/RELEASING.md', '/.gitattributes', '/.gitignore') {

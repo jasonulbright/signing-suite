@@ -158,12 +158,7 @@ function New-TestDlibIdentity {
         $metadataPath = Join-Path $Folder 'dlib-metadata.txt'
         [System.IO.File]::WriteAllBytes($certificatePath, $certificate.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert))
         $rsa = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($certificate)
-        if ($rsa.PSObject.Methods['ExportPkcs8PrivateKey']) {
-            [System.IO.File]::WriteAllBytes($keyPath, $rsa.ExportPkcs8PrivateKey())
-        }
-        else {
-            [System.IO.File]::WriteAllBytes($keyPath, ([System.Security.Cryptography.RSACng]$rsa).Key.Export([System.Security.Cryptography.CngKeyBlobFormat]::Pkcs8PrivateBlob))
-        }
+        [System.IO.File]::WriteAllBytes($keyPath, ([System.Security.Cryptography.RSACng]$rsa).Key.Export([System.Security.Cryptography.CngKeyBlobFormat]::Pkcs8PrivateBlob))
         [System.IO.File]::WriteAllText($metadataPath, "key=$keyPath")
         [pscustomobject]@{
             CertificateFile = $certificatePath

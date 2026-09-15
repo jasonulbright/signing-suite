@@ -110,6 +110,19 @@ Describe 'Command-line script' {
         $LASTEXITCODE | Should -Be 0
     }
 
+    It 'exits 1 when no signable file is found' {
+        $empty = [System.IO.Directory]::CreateDirectory((Join-Path $TestDrive 'cli-empty')).FullName
+        [System.IO.File]::WriteAllText((Join-Path $empty 'notes.txt'), 'x')
+        $null = & $script:hostExe -NoProfile -ExecutionPolicy Bypass -File $script:cliScript -Path $empty -Verify 2>&1
+        $LASTEXITCODE | Should -Be 1
+    }
+
+    It 'refuses signing options with -Verify' {
+        $output = & $script:hostExe -NoProfile -ExecutionPolicy Bypass -File $script:cliScript -Path $script:failRoot -Verify -TimestampMode Rfc3161 2>&1
+        $LASTEXITCODE | Should -Be 2
+        ($output | Out-String) | Should -BeLike '*-TimestampMode*'
+    }
+
     It 'fails for a thumbprint that is not in the store' {
         $null = & $script:hostExe -NoProfile -ExecutionPolicy Bypass -File $script:cliScript -Path $script:failRoot -CertificateThumbprint '00' 2>&1
         $LASTEXITCODE | Should -Not -Be 0
