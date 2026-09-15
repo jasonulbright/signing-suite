@@ -1454,6 +1454,47 @@ function Remove-SelectedRows {
     Sync-Controls
 }
 
+function Get-KeyCommand {
+    <#
+    .SYNOPSIS
+        Maps a key press to a window command name, or returns nothing when the key is not a shortcut.
+    #>
+    param(
+        [System.Windows.Input.Key]$Key,
+        [System.Windows.Input.ModifierKeys]$Modifiers,
+        [bool]$GridFocused,
+        [bool]$Busy
+    )
+
+    $control = ($Modifiers -band [System.Windows.Input.ModifierKeys]::Control) -ne 0
+    $shift = ($Modifiers -band [System.Windows.Input.ModifierKeys]::Shift) -ne 0
+    $alt = ($Modifiers -band [System.Windows.Input.ModifierKeys]::Alt) -ne 0
+    if ($alt) {
+        return
+    }
+    # Key.Enter and Key.Return share one value whose name is Return, so keys are compared as enum values, not names.
+    $keys = [System.Windows.Input.Key]
+    if ($control) {
+        if ($Key -eq $keys::O) {
+            if ($shift) { return 'AddFolder' }
+            return 'AddFiles'
+        }
+        if ($shift) {
+            return
+        }
+        if ($Key -eq $keys::Enter) { return 'Sign' }
+        if ($Key -eq $keys::E) { return 'Export' }
+        if ($Key -eq $keys::F) { return 'Search' }
+        return
+    }
+    if ($shift) {
+        return
+    }
+    if ($Key -eq $keys::F5) { return 'Rescan' }
+    if ($Key -eq $keys::Delete -and $GridFocused) { return 'Remove' }
+    if ($Key -eq $keys::Escape -and $Busy) { return 'Cancel' }
+}
+
 function Save-CurrentSettings {
     $settings = $script:Settings
     $settings.Source = $script:Identity.Source
@@ -1673,22 +1714,21 @@ $script:ui.SignToolActionButton.Add_Click({
 
 $window.Add_PreviewKeyDown({
         $keyArgs = [System.Windows.Input.KeyEventArgs]$args[1]
-        $modifiers = [System.Windows.Input.Keyboard]::Modifiers
-        $control = ($modifiers -band [System.Windows.Input.ModifierKeys]::Control) -ne 0
-        $shift = ($modifiers -band [System.Windows.Input.ModifierKeys]::Shift) -ne 0
         $key = if ($keyArgs.Key -eq [System.Windows.Input.Key]::System) { $keyArgs.SystemKey } else { $keyArgs.Key }
-        $handled = $true
-        if ($control -and $key -eq [System.Windows.Input.Key]::O -and $shift) { & $addFolder }
-        elseif ($control -and $key -eq [System.Windows.Input.Key]::O) { & $addFiles }
-        elseif ($control -and $key -eq [System.Windows.Input.Key]::Enter) { if ($script:ui.SignButton.IsEnabled) { & $sign } }
-        elseif ($control -and $key -eq [System.Windows.Input.Key]::E) { if ($script:ui.ExportButton.IsEnabled) { & $export } }
-        elseif ($control -and $key -eq [System.Windows.Input.Key]::F) { [void]$script:ui.SearchBox.Focus(); $script:ui.SearchBox.SelectAll() }
-        elseif ($key -eq [System.Windows.Input.Key]::F5) { & $rescan }
-        elseif ($key -eq [System.Windows.Input.Key]::Delete -and $script:ui.FileGrid.IsKeyboardFocusWithin) { Invoke-Safely { Remove-SelectedRows } }
-        elseif ($key -eq [System.Windows.Input.Key]::Escape -and $script:Job) { Stop-BackgroundJob }
-        else { $handled = $false }
-        if ($handled) {
-            $keyArgs.Handled = $true
+        $command = Get-KeyCommand -Key $key -Modifiers ([System.Windows.Input.Keyboard]::Modifiers) -GridFocused $script:ui.FileGrid.IsKeyboardFocusWithin -Busy ($null -ne $script:Job)
+        if (-not $command) {
+            return
+        }
+        $keyArgs.Handled = $true
+        switch ($command) {
+            'AddFiles' { & $addFiles }
+            'AddFolder' { & $addFolder }
+            'Sign' { if ($script:ui.SignButton.IsEnabled) { & $sign } }
+            'Export' { if ($script:ui.ExportButton.IsEnabled) { & $export } }
+            'Search' { [void]$script:ui.SearchBox.Focus(); $script:ui.SearchBox.SelectAll() }
+            'Rescan' { & $rescan }
+            'Remove' { Invoke-Safely { Remove-SelectedRows } }
+            'Cancel' { Stop-BackgroundJob }
         }
     })
 

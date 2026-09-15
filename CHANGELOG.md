@@ -2,6 +2,11 @@
 
 ## [2026.09.15.0001] - 2026-09-15
 
+### Platform
+
+- Run on Windows PowerShell 5.1.
+- Restart in Windows PowerShell when started from PowerShell 7.
+
 ### Formats
 
 - Sign PowerShell scripts, modules, manifests, formatting and type files.

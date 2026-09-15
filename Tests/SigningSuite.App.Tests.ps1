@@ -290,6 +290,36 @@ Describe 'Window behavior' -Skip:(-not $script:isSta) {
         @(Import-Csv -LiteralPath $csv).Count | Should -Be @(Get-VisibleRows).Count
     }
 
+    It 'maps <Keys> to <Expected>' -ForEach @(
+        # Modifier values: Alt 1, Control 2, Shift 4. WPF's converter does not parse "None" or comma lists.
+        @{ Keys = 'Ctrl+O'; Key = 'O'; Modifiers = 2; GridFocused = $false; Busy = $false; Expected = 'AddFiles' }
+        @{ Keys = 'Ctrl+Shift+O'; Key = 'O'; Modifiers = 6; GridFocused = $false; Busy = $false; Expected = 'AddFolder' }
+        @{ Keys = 'Ctrl+Enter'; Key = 'Enter'; Modifiers = 2; GridFocused = $false; Busy = $false; Expected = 'Sign' }
+        @{ Keys = 'Ctrl+E'; Key = 'E'; Modifiers = 2; GridFocused = $false; Busy = $false; Expected = 'Export' }
+        @{ Keys = 'Ctrl+F'; Key = 'F'; Modifiers = 2; GridFocused = $false; Busy = $false; Expected = 'Search' }
+        @{ Keys = 'F5'; Key = 'F5'; Modifiers = 0; GridFocused = $false; Busy = $false; Expected = 'Rescan' }
+        @{ Keys = 'Delete in the grid'; Key = 'Delete'; Modifiers = 0; GridFocused = $true; Busy = $false; Expected = 'Remove' }
+        @{ Keys = 'Delete in a text box'; Key = 'Delete'; Modifiers = 0; GridFocused = $false; Busy = $false; Expected = '' }
+        @{ Keys = 'Esc while busy'; Key = 'Escape'; Modifiers = 0; GridFocused = $false; Busy = $true; Expected = 'Cancel' }
+        @{ Keys = 'Esc while idle'; Key = 'Escape'; Modifiers = 0; GridFocused = $false; Busy = $false; Expected = '' }
+        @{ Keys = 'plain O'; Key = 'O'; Modifiers = 0; GridFocused = $false; Busy = $false; Expected = '' }
+        @{ Keys = 'Ctrl+Alt+O'; Key = 'O'; Modifiers = 3; GridFocused = $false; Busy = $false; Expected = '' }
+    ) {
+        $modifierKeys = [System.Windows.Input.ModifierKeys][int]$Modifiers
+        # In Windows PowerShell, [string] of a command that writes nothing stays $null; string expansion gives an empty string.
+        $actual = "$(Get-KeyCommand -Key ([System.Windows.Input.Key]$Key) -Modifiers $modifierKeys -GridFocused $GridFocused -Busy $Busy)"
+        $actual | Should -BeExactly "$Expected"
+    }
+
+    It 'gives every input control an automation name' {
+        $unnamed = foreach ($match in [regex]::Matches($script:MainXaml, '<(TextBox|ComboBox|DataGrid|PasswordBox)[\s/>][^>]*>')) {
+            if ($match.Value -notmatch 'AutomationProperties\.Name=') {
+                $match.Value
+            }
+        }
+        @($unnamed) | Should -BeNullOrEmpty
+    }
+
     It 'stops a running job when cancel is requested' {
         $script:ui.SkipValidCheck.IsChecked = $false
         $many = [System.IO.Directory]::CreateDirectory((Join-Path $TestDrive 'many')).FullName
