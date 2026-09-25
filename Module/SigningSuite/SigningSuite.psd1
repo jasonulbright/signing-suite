@@ -1,6 +1,6 @@
 @{
     RootModule           = 'SigningSuite.psm1'
-    ModuleVersion        = '2026.9.15.5'
+    ModuleVersion        = '2026.9.25.6'
     GUID                 = '4f1c7a2e-9b3d-4e8a-a6f1-2c5d8e9b7a31'
     Author               = 'Jason Ulbright'
     Copyright            = '(c) Jason Ulbright. All rights reserved.'
@@ -32,10 +32,12 @@
         'Import-PfxToUserStore'
         'Invoke-ExternalProcess'
         'Invoke-FileSigning'
+        'Invoke-SignatureRemovalBatch'
         'Invoke-SigningBatch'
         'Invoke-SignTool'
         'New-ArtifactSigningMetadata'
         'New-SignToolSignArgument'
+        'Remove-FileSignature'
         'Resolve-SigningEngine'
         'Save-SigningSuiteSettings'
         'Test-CertificateMatchesPublisher'
@@ -49,7 +51,7 @@
     VariablesToExport    = @()
     AliasesToExport      = @()
     PrivateData          = @{
-        SigningSuiteVersion = '2026.09.15.0005'
+        SigningSuiteVersion = '2026.09.25.0006'
         PSData              = @{
             Tags = @('Authenticode', 'CodeSigning', 'SignTool', 'VBA', 'MSIX')
         }

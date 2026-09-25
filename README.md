@@ -6,7 +6,7 @@
 [![PowerShell](https://img.shields.io/badge/PowerShell-5.1-5391FE)](#requirements)
 [![License](https://img.shields.io/github/license/jasonulbright/signing-suite)](LICENSE)
 
-**Download:** [SigningSuiteSetup-2026.09.15.0005.exe](https://github.com/jasonulbright/signing-suite/releases/download/v2026.09.15.0005/SigningSuiteSetup-2026.09.15.0005.exe) (installer) or [SigningSuite-2026.09.15.0005.zip](https://github.com/jasonulbright/signing-suite/releases/download/v2026.09.15.0005/SigningSuite-2026.09.15.0005.zip) (portable)
+**Download:** [SigningSuiteSetup-2026.09.25.0006.exe](https://github.com/jasonulbright/signing-suite/releases/download/v2026.09.25.0006/SigningSuiteSetup-2026.09.25.0006.exe) (installer) or [SigningSuite-2026.09.25.0006.zip](https://github.com/jasonulbright/signing-suite/releases/download/v2026.09.25.0006/SigningSuite-2026.09.25.0006.zip) (portable)
 
 WPF tool that Authenticode-signs scripts, executables, installers, cabinets, catalogs, app packages and the VBA projects in Office files. Drop files or folders onto the window; each file shows its format, its current signature and whether it can be signed, and one button signs the rest.
 
@@ -36,7 +36,7 @@ Silent install (installs every component):
 SigningSuiteSetup-<version>.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG="%TEMP%\SigningSuiteSetup.log"
 ```
 
-Limit components with `/COMPONENTS="app,officesips,sdktools"`. Setup returns 0 on success and a non-zero exit code when a prerequisite download or installation fails; the log names the step. When setup runs as SYSTEM (for example from a software deployment tool), Artifact Signing Client Tools install into the SYSTEM profile, not into users' profiles.
+Limit components with `/COMPONENTS="app,officesips,sdktools"`. Pass Windows Installer public properties to the MSI prerequisites with `/ArtifactSigningProperties="ADDLOCAL=ALL"` and `/AzureCliProperties="ALLUSERS=1"`; the value is appended to that package's `msiexec` command line after `/qn /norestart` and written to the log. Setup returns 0 on success and a non-zero exit code when a prerequisite download or installation fails; the log names the step. When setup runs as SYSTEM (for example from a software deployment tool), Artifact Signing Client Tools install into the SYSTEM profile, not into users' profiles.
 
 ### Portable zip
 
@@ -81,7 +81,7 @@ powershell.exe -NoProfile -STA -File .\start-signingsuite.ps1 'C:\Build\Output' 
 1. Pick the signing identity at the top: **Certificate store**, **Artifact Signing** or **Digest signing library**, then **Change...**.
 2. Add files or folders. Folders are searched recursively for every format in the table.
 3. Check **Signing options**.
-4. **Sign N files** signs the Ready and Failed files that the current filter shows.
+4. **Sign N files** shows the identity, files and options, and signs the Ready and Failed files that the current filter shows after you confirm.
 
 ### Signing identities
 
@@ -103,8 +103,16 @@ powershell.exe -NoProfile -STA -File .\start-signingsuite.ps1 'C:\Build\Output' 
 | Timestamp | RFC 3161 (SignTool), Authenticode legacy, or None. The server defaults to `http://timestamp.digicert.com`. |
 | Dual sign | Executables and cabinets get a SHA1 signature with an Authenticode timestamp, then the selected digest appended. Other formats hold one signature and are signed once. |
 | Skip files that already have a valid signature | Leaves validly signed files alone; they are counted in the summary. |
-| Remove existing VBA signatures | Runs `offclearsig.exe` from the Office SIP folder before signing Office files. Asks for confirmation. |
+| Remove existing VBA signatures | Runs `offclearsig.exe` from the Office SIP folder before signing Office files. The confirmation dialog names the affected files. |
 | Description, description URL | signtool `/d` and `/du`. |
+
+### Confirmation before signing
+
+**Sign** opens a confirmation dialog before any file changes. It shows the identity that will sign (certificate name, issuer, expiry, thumbprint and key provider; or the Artifact Signing account, certificate profile and endpoint; or the digest signing library and its certificate), the number of files by format, and the options in use. Warnings name files that already carry another signer's signature, a missing timestamp, a certificate that expires within 14 days, and VBA signatures that will be cleared. **Cancel** is the default button: Enter and Escape both leave the files unchanged.
+
+### Removing signatures
+
+**Remove signatures...** unsigns the signed files the current filter shows, after a confirmation dialog that lists the signers and the file count. Scripts, executables, installers and app packages are unsigned through the Subject Interface Package Windows registers for the file type; Office files through `offclearsig.exe`. Cabinets and catalogs are never offered: Windows has no removal path for a cabinet signature, and a catalog is itself a signature. Unsigned files return to **Ready**.
 
 ## Behavior
 
@@ -130,7 +138,9 @@ powershell.exe -NoProfile -STA -File .\start-signingsuite.ps1 'C:\Build\Output' 
 | Ctrl+F | Search |
 | Ctrl+Enter | Sign |
 | Ctrl+E | Export CSV |
-| Esc | Cancel the running scan, signing or verification after the current file |
+| Esc | Cancel the running scan, signing, verification or signature removal after the current file |
+
+Signing and signature removal have no shortcut that skips the confirmation dialog.
 
 ## Trusting signatures on clients
 
@@ -158,6 +168,9 @@ powershell.exe -NoProfile -File .\Invoke-SigningSuite.ps1 -Path .\out -DlibPath 
 
 # Verify; exits 1 when a signature is invalid or unreadable
 powershell.exe -NoProfile -File .\Invoke-SigningSuite.ps1 -Path .\out -Verify
+
+# Remove signatures; -WhatIf lists the signed files without changing them
+powershell.exe -NoProfile -File .\Invoke-SigningSuite.ps1 -Path .\out -RemoveSignature
 ```
 
 The other options match the window: `-Engine`, `-DigestAlgorithm`, `-DualSign`, `-SkipValid`, `-ClearOfficeSignatures`, `-Description`, `-DescriptionUrl`, `-SignToolPath`.
@@ -187,7 +200,7 @@ Requires Pester 5. Tests never write to a certificate store: they sign with thro
 
 ```
 start-signingsuite.ps1          # WPF entry script
-Invoke-SigningSuite.ps1         # Command-line signing and verification
+Invoke-SigningSuite.ps1         # Command-line signing, verification and signature removal
 MainWindow.xaml                 # Main window
 Module/SigningSuite/            # Signing, scanning, verification, settings
     SigningSuite.psd1

@@ -22,7 +22,7 @@
 
 .NOTES
     ScriptName : start-signingsuite.ps1
-    Version    : 2026.09.15.0005
+    Version    : 2026.09.25.0006
 #>
 [CmdletBinding()]
 param(
@@ -228,6 +228,40 @@ $script:VerifyWorker = {
             }
         }
         $Queue.Enqueue([pscustomobject]@{ Kind = 'Verified'; Verification = $verification })
+    }
+}
+
+$script:RemoveWorker = {
+    param(
+        [string[]]$Paths,
+        [string]$OffClearSigPath,
+        [string]$ModuleManifest,
+        [System.Collections.Concurrent.ConcurrentQueue[object]]$Queue,
+        [hashtable]$Cancel
+    )
+
+    Import-Module -Name $ModuleManifest -ErrorAction Stop
+
+    foreach ($path in $Paths) {
+        if ($Cancel.Requested) {
+            break
+        }
+        try {
+            $result = Remove-FileSignature -LiteralPath $path -OffClearSigPath $OffClearSigPath -Confirm:$false
+        }
+        catch {
+            $result = [pscustomobject]@{
+                Path             = $path
+                Status           = 'Failed'
+                Detail           = $_.Exception.Message
+                PreviousSigner   = $null
+                SignatureState   = ''
+                Signer           = $null
+                SignerThumbprint = $null
+                Timestamped      = $false
+            }
+        }
+        $Queue.Enqueue([pscustomobject]@{ Kind = 'Removed'; Result = $result })
     }
 }
 
@@ -443,6 +477,67 @@ $script:ToolIdentityXaml = @'
   </StackPanel>
 </Window>
 '@
+
+$script:ConfirmXaml = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Confirm" Width="680" SizeToContent="Height" ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
+        FontFamily="Segoe UI" FontSize="13" Background="#FFF5F6F8">
+  <StackPanel Margin="18">
+    <TextBlock x:Name="HeadingText" FontSize="15" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,0,0,10"/>
+    <Border Background="White" BorderBrush="#FFD5D9E0" BorderThickness="1" CornerRadius="4" Padding="12,8">
+      <TextBlock x:Name="IdentityText" TextWrapping="Wrap" LineHeight="20" AutomationProperties.Name="Identity"/>
+    </Border>
+    <TextBlock x:Name="FilesText" TextWrapping="Wrap" Margin="0,12,0,0" AutomationProperties.Name="Files"/>
+    <TextBlock x:Name="OptionsText" TextWrapping="Wrap" Margin="0,6,0,0" Foreground="#FF5F6B7A" AutomationProperties.Name="Options"/>
+    <Border x:Name="WarningPanel" Background="#FFFFF4E5" BorderBrush="#FFF0B45A" BorderThickness="1" CornerRadius="4" Padding="12,6" Margin="0,12,0,0">
+      <TextBlock x:Name="WarningText" TextWrapping="Wrap" AutomationProperties.Name="Warnings"/>
+    </Border>
+    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0">
+      <Button x:Name="OkButton" MinWidth="150" Padding="12,4" Margin="0,0,8,0" FontWeight="SemiBold"/>
+      <Button x:Name="CancelButton" Content="Cancel" IsCancel="True" IsDefault="True" MinWidth="90" Padding="12,4"/>
+    </StackPanel>
+  </StackPanel>
+</Window>
+'@
+
+function Show-RunConfirmation {
+    <#
+    .SYNOPSIS
+        Shows what a run is about to do and returns $true only when the user chooses the action button.
+    .DESCRIPTION
+        Cancel is the default button, so Enter and Escape both leave the files unchanged; the action needs a click on
+        the named button.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [object]$Summary,
+        [System.Windows.Window]$Owner = $script:MainWindow,
+        [scriptblock]$Configure
+    )
+
+    $dialog = ConvertFrom-XamlWindow -Xaml $script:ConfirmXaml -Owner $Owner
+    $dialog.Title = $Summary.Title
+    $dialog.FindName('HeadingText').Text = $Summary.Heading
+    $dialog.FindName('IdentityText').Text = (@($Summary.IdentityLines) -join "`n")
+    $dialog.FindName('FilesText').Text = $Summary.FileText
+    $options = $dialog.FindName('OptionsText')
+    $options.Text = $Summary.OptionText
+    $options.Visibility = if ($Summary.OptionText) { 'Visible' } else { 'Collapsed' }
+    $warnings = @($Summary.Warnings | Where-Object { $_ })
+    $dialog.FindName('WarningText').Text = ($warnings -join "`n")
+    $dialog.FindName('WarningPanel').Visibility = if ($warnings.Count -gt 0) { 'Visible' } else { 'Collapsed' }
+    $okButton = $dialog.FindName('OkButton')
+    $okButton.Content = $Summary.ButtonText
+    $okButton.Add_Click({ $dialog.DialogResult = $true })
+    $cancelButton = $dialog.FindName('CancelButton')
+    $dialog.Add_ContentRendered({ [void]$cancelButton.Focus() })
+    if ($Configure) {
+        & $Configure $dialog
+    }
+    $dialog.ShowDialog() -eq $true
+}
 
 function Read-PfxPassword {
     param(
@@ -852,6 +947,179 @@ function Get-SigningCandidates {
     [pscustomobject]@{ Rows = $pending; SkippedValid = $skippedValid }
 }
 
+function Get-RemovalCandidates {
+    # Cabinets and catalogs are signed formats without a removal path, so they are never offered.
+    @(Get-VisibleRows | Where-Object { $_.ProviderId -and $_.ProviderId -notin 'Cabinet', 'Catalog' -and $_.SignatureState -in 'Valid', 'Untrusted', 'Invalid' })
+}
+
+function Get-FormatCountText {
+    param([object[]]$Rows)
+
+    $counts = [ordered]@{}
+    foreach ($row in $Rows) {
+        $format = if ($row.Format) { $row.Format } else { 'Other' }
+        $counts[$format] = 1 + [int]$counts[$format]
+    }
+    (@($counts.Keys | ForEach-Object { "$($counts[$_]) $_" }) -join ', ')
+}
+
+function Get-SigningRunSummary {
+    <#
+    .SYNOPSIS
+        Describes a signing run for the confirmation dialog: the identity, the files and the options in plain text.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [object]$Identity,
+
+        [Parameter(Mandatory)]
+        [hashtable]$Options,
+
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [object[]]$Rows,
+
+        [string]$Engine = 'Auto'
+    )
+
+    $identityLines = [System.Collections.Generic.List[string]]::new()
+    $warnings = [System.Collections.Generic.List[string]]::new()
+    $selectedThumbprint = $null
+    switch ($Identity.Source) {
+        'Store' {
+            $label = Get-CertificateLabel -Certificate $Identity.Certificate
+            $selectedThumbprint = $label.Thumbprint
+            $identityLines.Add("Certificate: $($label.IssuedTo)")
+            $identityLines.Add("Issued by: $($label.IssuedBy)")
+            $identityLines.Add("Expires: $($label.Expires)")
+            $identityLines.Add("Thumbprint: $($label.Thumbprint)")
+            $provider = if ($label.KeyProvider) { $label.KeyProvider } else { 'not named' }
+            $identityLines.Add("Key: $provider ($($label.StoreLocation))")
+            if ($Identity.Certificate.NotAfter -le (Get-Date).AddDays(14)) {
+                $warnings.Add("The certificate expires on $($label.Expires). Signatures without a timestamp stop validating after that date.")
+            }
+        }
+        'ArtifactSigning' {
+            $identityLines.Add('Identity: Artifact Signing (certificate issued by the service for this run)')
+            try {
+                $metadata = [System.IO.File]::ReadAllText($Identity.MetadataPath) | ConvertFrom-Json -ErrorAction Stop
+                $identityLines.Add("Account: $($metadata.CodeSigningAccountName)")
+                $identityLines.Add("Certificate profile: $($metadata.CertificateProfileName)")
+                $identityLines.Add("Endpoint: $($metadata.Endpoint)")
+            }
+            catch {
+                $warnings.Add("The metadata file could not be read as JSON: $($_.Exception.Message)")
+            }
+            $identityLines.Add("Metadata: $($Identity.MetadataPath)")
+            $identityLines.Add("Library: $($Identity.DlibPath)")
+        }
+        'Dlib' {
+            $identityLines.Add("Identity: digest signing library $([System.IO.Path]::GetFileName($Identity.DlibPath))")
+            $identityLines.Add("Library: $($Identity.DlibPath)")
+            $identityLines.Add("Metadata: $(if ($Identity.MetadataPath) { $Identity.MetadataPath } else { 'none' })")
+            if ($Identity.CertificateFile) {
+                try {
+                    $fileCertificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($Identity.CertificateFile)
+                    try {
+                        $selectedThumbprint = $fileCertificate.Thumbprint
+                        $identityLines.Add("Certificate: $($fileCertificate.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)) ($($Identity.CertificateFile))")
+                        $identityLines.Add("Thumbprint: $($fileCertificate.Thumbprint)")
+                    }
+                    finally {
+                        $fileCertificate.Dispose()
+                    }
+                }
+                catch {
+                    $warnings.Add("The certificate file could not be read: $($_.Exception.Message)")
+                }
+            }
+            else {
+                $identityLines.Add('Certificate: supplied by the library')
+            }
+        }
+    }
+
+    $count = $Rows.Count
+    $fileText = "Sign $count file$(if ($count -ne 1) { 's' }): $(Get-FormatCountText -Rows $Rows)."
+    $signed = @($Rows | Where-Object { $_.SignatureState -in 'Valid', 'Untrusted', 'Invalid' })
+    if ($signed.Count -gt 0) {
+        $others = @($signed | Where-Object { -not $selectedThumbprint -or $_.SignerThumbprint -ne $selectedThumbprint })
+        if ($others.Count -gt 0) {
+            $signers = @($others | ForEach-Object { if ($_.Signer) { $_.Signer } else { 'unknown signer' } } | Sort-Object -Unique)
+            $warnings.Add("$($others.Count) file$(if ($others.Count -ne 1) { 's' }) already carry a signature from $($signers -join ', '); signing replaces it.")
+        }
+        else {
+            $fileText += " $($signed.Count) already signed with this certificate and will be signed again."
+        }
+    }
+
+    $optionParts = [System.Collections.Generic.List[string]]::new()
+    $optionParts.Add("Engine $Engine")
+    $optionParts.Add("digest $($Options.DigestAlgorithm)")
+    $optionParts.Add($(switch ($Options.TimestampMode) {
+                'Rfc3161' { "RFC 3161 timestamp from $($Options.TimestampServer)" }
+                'Authenticode' { "Authenticode timestamp from $($Options.TimestampServer)" }
+                default { 'no timestamp' }
+            }))
+    if ($Options.DualSign) {
+        $optionParts.Add('dual sign')
+    }
+    if ($Options.Description) {
+        $optionParts.Add("description '$($Options.Description)'")
+    }
+    if ($Options.TimestampMode -eq 'None') {
+        $warnings.Add('No timestamp: these signatures stop validating when the certificate expires.')
+    }
+    $officeCount = @($Rows | Where-Object ProviderId -eq 'OfficeVba').Count
+    if ($Options.ClearVbaSignatures -and $officeCount -gt 0) {
+        $warnings.Add("Existing VBA signatures in $officeCount Office file$(if ($officeCount -ne 1) { 's' }) will be removed before signing. Files that fail to sign afterwards are left without a VBA signature.")
+    }
+
+    [pscustomobject]@{
+        Title         = 'Confirm signing'
+        Heading       = "Sign $count file$(if ($count -ne 1) { 's' }) with this identity?"
+        IdentityLines = [string[]]$identityLines.ToArray()
+        FileText      = $fileText
+        OptionText    = (($optionParts -join '; ') + '.')
+        Warnings      = [string[]]$warnings.ToArray()
+        ButtonText    = "Sign $count file$(if ($count -ne 1) { 's' })"
+    }
+}
+
+function Get-RemovalRunSummary {
+    <#
+    .SYNOPSIS
+        Describes a signature removal run for the confirmation dialog: which signers the files carry and what is lost.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [object[]]$Rows
+    )
+
+    $signers = [ordered]@{}
+    foreach ($row in $Rows) {
+        $name = if ($row.Signer) { $row.Signer } else { 'unknown signer' }
+        $signers[$name] = 1 + [int]$signers[$name]
+    }
+    $identityLines = [string[]]@($signers.Keys | ForEach-Object { "Signed by $($_): $($signers[$_]) file$(if ($signers[$_] -ne 1) { 's' })" })
+    $count = $Rows.Count
+    $warnings = [System.Collections.Generic.List[string]]::new()
+    $warnings.Add('This cannot be undone. Unsigned files lose the trust their signature gave them until they are signed again.')
+    $officeCount = @($Rows | Where-Object ProviderId -eq 'OfficeVba').Count
+    $optionText = if ($officeCount -gt 0) { 'Office files lose every VBA signature through offclearsig.exe from the Office SIP package.' } else { '' }
+
+    [pscustomobject]@{
+        Title         = 'Confirm signature removal'
+        Heading       = "Remove the signatures from $count file$(if ($count -ne 1) { 's' })?"
+        IdentityLines = $identityLines
+        FileText      = "Unsign $count file$(if ($count -ne 1) { 's' }): $(Get-FormatCountText -Rows $Rows)."
+        OptionText    = $optionText
+        Warnings      = [string[]]$warnings.ToArray()
+        ButtonText    = 'Remove signatures'
+    }
+}
+
 function Test-IdentityReady {
     switch ($script:Identity.Source) {
         'Store' { return $null -ne $script:Identity.Certificate }
@@ -872,6 +1140,7 @@ function Sync-Controls {
     $script:ui.SignButton.Content = if ($pending -eq 1) { 'Sign 1 file' } else { "Sign $pending files" }
     $script:ui.SignButton.IsEnabled = $idle -and $pending -gt 0 -and (Test-IdentityReady)
     $script:ui.VerifyButton.IsEnabled = $idle -and $script:Rows.Count -gt 0
+    $script:ui.RemoveSignatureButton.IsEnabled = $idle -and @(Get-RemovalCandidates).Count -gt 0
     $script:ui.ExportButton.IsEnabled = $idle -and $script:Rows.Count -gt 0
     $script:ui.RescanButton.IsEnabled = $idle -and $script:Rows.Count -gt 0
     $script:ui.RemoveButton.IsEnabled = $idle -and $script:ui.FileGrid.SelectedItems.Count -gt 0
@@ -1302,54 +1571,54 @@ function Invoke-Signing {
 
     $requested = Get-ComboTag -Combo $script:ui.EngineCombo
     $items = [System.Collections.Generic.List[object]]::new()
-    $notAttempted = 0
-    $officeCount = 0
+    $itemRows = [System.Collections.Generic.List[object]]::new()
+    # Rows that cannot be signed change only after the user confirms the run, so Cancel leaves the list as it was.
+    $notAttempted = [System.Collections.Generic.List[hashtable]]::new()
     foreach ($row in $rows) {
         $provider = if ($row.ProviderId) { Get-FormatProvider -Id $row.ProviderId } else { $null }
         if (-not $provider) {
-            Update-FileRow -Path $row.Path -Changes @{ Status = 'Skipped'; Detail = 'Not a signable file type.' }
-            $notAttempted++
+            $notAttempted.Add(@{ Path = $row.Path; Changes = @{ Status = 'Skipped'; Detail = 'Not a signable file type.' } })
             continue
         }
         $engine = Resolve-SigningEngine -Provider $provider -Requested $requested -SignToolAvailable ([bool]$script:SignTool) -Source $options.Source -TimestampMode $options.TimestampMode
         if (-not $engine.Engine) {
-            Update-FileRow -Path $row.Path -Changes @{ Status = 'Failed'; Detail = "Not signed: $($engine.Reason)" }
-            $notAttempted++
+            $notAttempted.Add(@{ Path = $row.Path; Changes = @{ Status = 'Failed'; Detail = "Not signed: $($engine.Reason)" } })
             continue
         }
-        if ($provider.Id -eq 'OfficeVba') {
-            $officeCount++
-        }
         $items.Add([pscustomobject]@{ Path = $row.Path; Engine = $engine.Engine })
+        $itemRows.Add($row)
     }
 
     if ($items.Count -eq 0) {
+        foreach ($entry in $notAttempted) {
+            Update-FileRow -Path $entry.Path -Changes $entry.Changes
+        }
         Sync-Controls
         [void](Show-Message -Icon Warning -Text 'No files were signed; the Details column shows why.')
         return
     }
-    if ($options.ClearVbaSignatures -and $officeCount -gt 0) {
-        $answer = Show-Message -Icon Warning -Buttons YesNo -Text "Existing VBA signatures in $officeCount Office file(s) will be removed before signing. Files that fail to sign afterwards are left without a VBA signature. Continue?"
-        if ($answer -ne [System.Windows.MessageBoxResult]::Yes) {
-            Sync-Controls
-            return
-        }
+    $summary = Get-SigningRunSummary -Identity $script:Identity -Options $options -Rows $itemRows.ToArray() -Engine $requested
+    if (-not (Show-RunConfirmation -Summary $summary)) {
+        return
+    }
+    foreach ($entry in $notAttempted) {
+        Update-FileRow -Path $entry.Path -Changes $entry.Changes
     }
 
     $script:SignStats = @{
         Total        = $rows.Count
-        Done         = $notAttempted
+        Done         = $notAttempted.Count
         Signed       = 0
         Failed       = 0
         Skipped      = 0
-        NotAttempted = $notAttempted
+        NotAttempted = $notAttempted.Count
         SkippedValid = $candidates.SkippedValid
         Timestamp    = $options.TimestampServer
         TimestampFailures = 0
     }
     Switch-BusyState -Busy $true -Maximum $rows.Count
-    $script:ui.Progress.Value = $notAttempted
-    $script:ui.SummaryText.Text = "Signing $notAttempted of $($rows.Count)..."
+    $script:ui.Progress.Value = $notAttempted.Count
+    $script:ui.SummaryText.Text = "Signing $($notAttempted.Count) of $($rows.Count)..."
     $certificate = if ($options.Source -eq 'Store') { $script:Identity.Certificate } else { $null }
 
     Invoke-BackgroundJob -Worker $script:SignWorker -Parameters @{
@@ -1467,6 +1736,85 @@ function Invoke-Verify {
         }
         if (-not $script:CloseWhenIdle) {
             [void](Show-Message -Text $text)
+        }
+    }
+}
+
+function Invoke-SignatureRemoval {
+    if ($script:Job) {
+        return
+    }
+    $rows = @(Get-RemovalCandidates)
+    if ($rows.Count -eq 0) {
+        return
+    }
+    if (-not (Show-RunConfirmation -Summary (Get-RemovalRunSummary -Rows $rows))) {
+        return
+    }
+    $offClear = ''
+    $sip = Get-OfficeSipStatus | Where-Object { $_.Is64Bit -eq [Environment]::Is64BitProcess } | Select-Object -First 1
+    if ($sip -and $sip.OffClearSigPath) {
+        $offClear = $sip.OffClearSigPath
+    }
+
+    $script:SignStats = @{ Total = $rows.Count; Done = 0; Removed = 0; Failed = 0; Skipped = 0 }
+    Switch-BusyState -Busy $true -Maximum $rows.Count
+    $script:ui.SummaryText.Text = "Removing signatures 0 of $($rows.Count)..."
+
+    Invoke-BackgroundJob -Worker $script:RemoveWorker -Parameters @{
+        Paths           = [string[]]@($rows | ForEach-Object { $_.Path })
+        OffClearSigPath = $offClear
+        ModuleManifest  = $script:ModuleManifest
+    } -OnMessage {
+        param($Message)
+
+        $result = $Message.Result
+        $changes = switch ($result.Status) {
+            'Removed' { @{ Status = 'Ready'; Detail = $result.Detail } }
+            'Skipped' { @{ Detail = $result.Detail } }
+            default { @{ Status = 'Failed'; Detail = "Signature not removed: $($result.Detail)" } }
+        }
+        # Every outcome re-read the signature, so the row shows the state the file has now.
+        if ($result.SignatureState) {
+            $changes.SignatureState = $result.SignatureState
+            $changes.Signer = $result.Signer
+            $changes.SignerThumbprint = $result.SignerThumbprint
+            $changes.Timestamped = [bool]$result.Timestamped
+        }
+        Update-FileRow -Path $result.Path -Changes $changes
+        $stats = $script:SignStats
+        $stats.Done++
+        switch ($result.Status) {
+            'Removed' { $stats.Removed++ }
+            'Skipped' { $stats.Skipped++ }
+            default { $stats.Failed++ }
+        }
+        $script:ui.Progress.Value = $stats.Done
+        $script:ui.SummaryText.Text = "Removing signatures $($stats.Done) of $($stats.Total)..."
+    } -OnComplete {
+        param($Failure, $Cancelled)
+
+        Switch-BusyState -Busy $false
+        $stats = $script:SignStats
+        $text = "Removed the signatures from $($stats.Removed) of $($stats.Total) files."
+        $icon = [System.Windows.MessageBoxImage]::Information
+        if ($stats.Skipped -gt 0) {
+            $text += " $($stats.Skipped) were not signed."
+        }
+        if ($stats.Failed -gt 0) {
+            $icon = [System.Windows.MessageBoxImage]::Warning
+            $text += " $($stats.Failed) failed; the Details column shows why."
+        }
+        if ($Cancelled) {
+            $icon = [System.Windows.MessageBoxImage]::Warning
+            $text += "`n`nRemoval was cancelled; $($stats.Total - $stats.Done) file(s) were not processed."
+        }
+        if ($Failure) {
+            $icon = [System.Windows.MessageBoxImage]::Error
+            $text += "`n`nRemoval stopped early: $Failure"
+        }
+        if (-not $script:CloseWhenIdle) {
+            [void](Show-Message -Icon $icon -Text $text)
         }
     }
 }
@@ -1706,6 +2054,7 @@ $script:ui.RescanButton.Add_Click($rescan)
 $script:ui.SignButton.Add_Click($sign)
 $script:ui.ExportButton.Add_Click($export)
 $script:ui.VerifyButton.Add_Click({ Invoke-Safely { Invoke-Verify } })
+$script:ui.RemoveSignatureButton.Add_Click({ Invoke-Safely { Invoke-SignatureRemoval } })
 $script:ui.CancelButton.Add_Click({ Stop-BackgroundJob })
 $script:ui.RemoveButton.Add_Click({ Invoke-Safely { Remove-SelectedRows } })
 $script:ui.RemoveMenu.Add_Click({ Invoke-Safely { Remove-SelectedRows } })

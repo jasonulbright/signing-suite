@@ -210,6 +210,23 @@ public static string[] Split(string commandLine)
         }
     }
 
+    It 'appends command-line MSI properties to the <Name> msiexec line' -ForEach @(
+        @{ Name = 'Artifact Signing Client Tools'; Parameter = 'ArtifactSigningProperties'; Package = 'ArtifactSigningClientTools.msi' }
+        @{ Name = 'Azure CLI'; Parameter = 'AzureCliProperties'; Package = 'azure-cli-2.90.0-x64.msi' }
+    ) {
+        $iss = [System.IO.File]::ReadAllText((Join-Path $script:repoRoot 'installer\SigningSuite.iss'))
+        $iss | Should -Match "ExpandConstant\('\{param:' \+ ParamName \+ '\|\}'\)"
+        $iss | Should -Match ([regex]::Escape($Package) + [regex]::Escape("') + '`" /qn /norestart' + MsiProperties('$Parameter')"))
+    }
+
+    It 'makes Cancel the default button of the confirmation dialog' {
+        $match = [regex]::Match($script:entryText, "(?s)\`$script:ConfirmXaml = @'\r?\n(.*?)\r?\n'@")
+        $cancel = [regex]::Match($match.Groups[1].Value, '<Button x:Name="CancelButton"[^>]*>').Value
+        $cancel | Should -Match 'IsDefault="True"'
+        $cancel | Should -Match 'IsCancel="True"'
+        [regex]::Match($match.Groups[1].Value, '<Button x:Name="OkButton"[^>]*>').Value | Should -Not -Match 'IsDefault'
+    }
+
     It 'keeps tests, native test sources and release tooling out of the release archive' {
         $attributes = [System.IO.File]::ReadAllText((Join-Path $script:repoRoot '.gitattributes'))
         foreach ($pattern in '/Tests', '/tools', '/RELEASING.md', '/.gitattributes', '/.gitignore') {
@@ -234,6 +251,7 @@ Describe 'Window markup' {
         @{ Name = 'PasswordXaml' }
         @{ Name = 'PickerXaml' }
         @{ Name = 'ToolIdentityXaml' }
+        @{ Name = 'ConfirmXaml' }
     ) {
         $match = [regex]::Match($script:entryText, "(?s)\`$script:$Name = @'\r?\n(.*?)\r?\n'@")
         $match.Success | Should -BeTrue
@@ -264,6 +282,15 @@ Describe 'Window behavior' -Skip:(-not $script:isSta) {
                 return [System.Windows.MessageBoxResult]::Yes
             }
             [System.Windows.MessageBoxResult]::OK
+        }
+        # The confirmation dialog is modal too; the answer is scripted and every summary is kept for inspection.
+        $script:confirmations = [System.Collections.Generic.List[object]]::new()
+        $script:confirmAnswer = $true
+        $script:realShowRunConfirmation = (Get-Command Show-RunConfirmation -CommandType Function).ScriptBlock
+        function Show-RunConfirmation {
+            param($Summary, $Owner)
+            $script:confirmations.Add($Summary)
+            $script:confirmAnswer
         }
         $script:listRoot = [System.IO.Directory]::CreateDirectory((Join-Path $TestDrive 'list [x]')).FullName
         [System.IO.File]::WriteAllText((Join-Path $listRoot 'one.ps1'), "Write-Output 1`r`n")
@@ -318,6 +345,29 @@ Describe 'Window behavior' -Skip:(-not $script:isSta) {
         }
     }
 
+    It 'leaves every row unchanged when the signing confirmation is declined' {
+        $certificate = New-TestCertificate
+        try {
+            $script:Identity.Certificate = $certificate
+            Select-ComboTag -Combo $script:ui.TimestampModeCombo -Tag 'None'
+            Update-IdentityDisplay
+            $before = @($script:Rows | ForEach-Object { "$($_.Name)=$($_.Status)" })
+            $script:confirmAnswer = $false
+            $script:confirmations.Clear()
+            Invoke-Signing
+            $script:Job | Should -BeNullOrEmpty
+            $script:confirmations.Count | Should -Be 1
+            $script:confirmations[0].Heading | Should -Be 'Sign 2 files with this identity?'
+            @($script:Rows | ForEach-Object { "$($_.Name)=$($_.Status)" }) | Should -Be $before
+        }
+        finally {
+            $script:confirmAnswer = $true
+            $script:Identity.Certificate = $null
+            Update-IdentityDisplay
+            $certificate.Dispose()
+        }
+    }
+
     It 'signs with the PowerShell engine and explains the files it cannot sign' {
         $pfx = Join-Path $TestDrive 'window.pfx'
         New-TestPfx -Path $pfx
@@ -327,8 +377,18 @@ Describe 'Window behavior' -Skip:(-not $script:isSta) {
             Select-ComboTag -Combo $script:ui.EngineCombo -Tag 'Auto'
             Select-ComboTag -Combo $script:ui.TimestampModeCombo -Tag 'None'
             Update-IdentityDisplay
+            $script:confirmations.Clear()
             Invoke-Signing
             Wait-TestBackgroundJob | Should -BeTrue
+
+            $summary = $script:confirmations[0]
+            $summary.Title | Should -Be 'Confirm signing'
+            $summary.ButtonText | Should -Be 'Sign 2 files'
+            $summary.IdentityLines | Should -Contain "Thumbprint: $($certificate.Thumbprint)"
+            $summary.IdentityLines | Should -Contain 'Certificate: Signing Suite Test'
+            $summary.FileText | Should -Be 'Sign 2 files: 1 PowerShell, 1 Windows Script Host.'
+            $summary.OptionText | Should -Be 'Engine Auto; digest SHA256; no timestamp.'
+            $summary.Warnings | Should -Contain 'No timestamp: these signatures stop validating when the certificate expires.'
 
             $byName = @{}
             foreach ($row in $script:Rows) {
@@ -354,6 +414,118 @@ Describe 'Window behavior' -Skip:(-not $script:isSta) {
         $row = $script:Rows | Where-Object Name -eq 'one.ps1'
         $row.SignatureState | Should -Be 'Untrusted'
         $script:shownMessages[-1] | Should -BeLike 'Verified 4 of 4 files:*'
+    }
+
+    It 'warns when the listed signature comes from another certificate' {
+        $certificate = New-TestCertificate -Subject 'CN=Other Signer'
+        try {
+            $script:Identity.Certificate = $certificate
+            Sync-Controls
+            $rows = @($script:Rows | Where-Object { $_.Name -in 'one.ps1', 'two.vbs' })
+            $summary = Get-SigningRunSummary -Identity $script:Identity -Options (Get-SigningOptions) -Rows $rows -Engine 'PowerShell'
+            $summary.Warnings | Should -Contain '2 files already carry a signature from Signing Suite Test; signing replaces it.'
+            $summary.IdentityLines[0] | Should -Be 'Certificate: Other Signer'
+        }
+        finally {
+            $script:Identity.Certificate = $null
+            $certificate.Dispose()
+        }
+    }
+
+    It 'describes an Artifact Signing identity from its metadata file' {
+        $metadata = Join-Path $TestDrive 'confirm-metadata.json'
+        $null = New-ArtifactSigningMetadata -Path $metadata -Endpoint 'https://eus.codesigning.azure.net/' -AccountName 'acct' -CertificateProfileName 'profile'
+        $identity = [pscustomobject]@{ Source = 'ArtifactSigning'; Certificate = $null; DlibPath = 'C:\dlib\Azure.CodeSigning.Dlib.dll'; MetadataPath = $metadata; CertificateFile = '' }
+        $options = @{ DigestAlgorithm = 'SHA256'; TimestampMode = 'Rfc3161'; TimestampServer = 'http://timestamp.acs.microsoft.com'; DualSign = $false; ClearVbaSignatures = $true; Description = '' }
+        $rows = @([pscustomobject]@{ Path = 'C:\x\Macro.xlsm'; Name = 'Macro.xlsm'; Format = 'Office VBA'; ProviderId = 'OfficeVba'; SignatureState = 'NotSigned'; Signer = $null; SignerThumbprint = $null })
+        $summary = Get-SigningRunSummary -Identity $identity -Options $options -Rows $rows -Engine 'SignTool'
+        $summary.IdentityLines | Should -Contain 'Account: acct'
+        $summary.IdentityLines | Should -Contain 'Certificate profile: profile'
+        $summary.IdentityLines | Should -Contain 'Endpoint: https://eus.codesigning.azure.net/'
+        $summary.OptionText | Should -Be 'Engine SignTool; digest SHA256; RFC 3161 timestamp from http://timestamp.acs.microsoft.com.'
+        $summary.Warnings | Should -HaveCount 1
+        $summary.Warnings[0] | Should -BeLike 'Existing VBA signatures in 1 Office file will be removed before signing.*'
+        $summary.Heading | Should -Be 'Sign 1 file with this identity?'
+    }
+
+    It 'enables signature removal only for signed rows and unsigns them after confirmation' {
+        Sync-Controls
+        $script:ui.RemoveSignatureButton.IsEnabled | Should -BeTrue
+        @(Get-RemovalCandidates | ForEach-Object Name) | Sort-Object | Should -Be @('one.ps1', 'two.vbs')
+        Update-FileRow -Path (Join-Path $script:listRoot 'app.msix') -Changes @{ ProviderId = 'Cabinet'; SignatureState = 'Valid'; Signer = 'Vendor' }
+        @(Get-RemovalCandidates | ForEach-Object Name) | Sort-Object | Should -Be @('one.ps1', 'two.vbs')
+        Update-FileRow -Path (Join-Path $script:listRoot 'app.msix') -Changes @{ ProviderId = 'AppPackage'; SignatureState = 'NotSigned'; Signer = $null }
+        $script:confirmations.Clear()
+        $script:shownMessages.Clear()
+        Invoke-SignatureRemoval
+        Wait-TestBackgroundJob | Should -BeTrue
+
+        $summary = $script:confirmations[0]
+        $summary.Heading | Should -Be 'Remove the signatures from 2 files?'
+        $summary.IdentityLines | Should -Be @('Signed by Signing Suite Test: 2 files')
+        $summary.ButtonText | Should -Be 'Remove signatures'
+        foreach ($name in 'one.ps1', 'two.vbs') {
+            $row = $script:Rows | Where-Object Name -eq $name
+            $row.Status | Should -Be 'Ready'
+            $row.SignatureState | Should -Be 'NotSigned'
+            $row.Detail | Should -Be 'Signature from Signing Suite Test removed.'
+            (Get-FileSignatureState -LiteralPath $row.Path).State | Should -Be 'NotSigned'
+        }
+        $script:shownMessages[-1] | Should -Be 'Removed the signatures from 2 of 2 files.'
+        $script:ui.RemoveSignatureButton.IsEnabled | Should -BeFalse
+        $script:ui.SignButton.Content | Should -Be 'Sign 3 files'
+    }
+
+    It 'answers <Expected> from the real dialog when <Button> is clicked' -ForEach @(
+        @{ Button = 'OkButton'; Expected = $true }
+        @{ Button = 'CancelButton'; Expected = $false }
+    ) {
+        $summary = Get-RemovalRunSummary -Rows @([pscustomobject]@{ Path = 'C:\x\a.ps1'; Name = 'a.ps1'; Format = 'PowerShell'; ProviderId = 'PowerShell'; Signer = 'Someone' })
+        $clicked = $Button
+        $script:watchdogFired = $false
+        $watchdog = [System.Windows.Threading.DispatcherTimer]::new()
+        $watchdog.Interval = [TimeSpan]::FromSeconds(15)
+        $answer = & $script:realShowRunConfirmation -Summary $summary -Owner $null -Configure {
+            param($Dialog)
+            # The dialog stays off screen and invisible. The button is invoked through its automation peer, which runs
+            # the same click path as a mouse click, so IsCancel and IsDefault behave as they do for the user.
+            $Dialog.Opacity = 0
+            $Dialog.WindowStartupLocation = 'Manual'
+            $Dialog.Left = -32000
+            $Dialog.Top = -32000
+            $Dialog.Add_ContentRendered({
+                    $peer = [System.Windows.Automation.Peers.ButtonAutomationPeer]::new($Dialog.FindName($clicked))
+                    $peer.GetPattern([System.Windows.Automation.Peers.PatternInterface]::Invoke).Invoke()
+                })
+            $watchdog.Add_Tick({
+                    $script:watchdogFired = $true
+                    $watchdog.Stop()
+                    $Dialog.DialogResult = $false
+                })
+            $watchdog.Start()
+        }
+        $watchdog.Stop()
+        $script:watchdogFired | Should -BeFalse -Because 'the button click must close the dialog by itself'
+        $answer | Should -Be $Expected
+    }
+
+    It 'does nothing when the removal confirmation is declined' {
+        $target = $script:Rows | Where-Object Name -eq 'one.ps1'
+        Update-FileRow -Path $target.Path -Changes @{ SignatureState = 'Untrusted'; Signer = 'Pretend' }
+        try {
+            Sync-Controls
+            $script:confirmAnswer = $false
+            $script:confirmations.Clear()
+            Invoke-SignatureRemoval
+            $script:Job | Should -BeNullOrEmpty
+            $script:confirmations.Count | Should -Be 1
+            ($script:Rows | Where-Object Name -eq 'one.ps1').SignatureState | Should -Be 'Untrusted'
+        }
+        finally {
+            $script:confirmAnswer = $true
+            Update-FileRow -Path $target.Path -Changes @{ SignatureState = 'NotSigned'; Signer = $null }
+            Sync-Controls
+        }
     }
 
     It 'removes selected rows and keeps the index consistent' {

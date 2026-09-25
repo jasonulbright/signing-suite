@@ -1,5 +1,7 @@
 ; Signing Suite setup. Build with tools\Build-Installer.ps1, which passes AppVersion, FileVersion and StageDir.
 ; Prerequisites download from Microsoft during setup; each download is checked against the SHA256 pinned below.
+; Setup command line: /ArtifactSigningProperties="..." and /AzureCliProperties="..." append Windows Installer public
+; properties (for example ADDLOCAL=ALL or ALLUSERS=1) to the msiexec line of that prerequisite.
 
 #ifndef AppVersion
   #define AppVersion "0000.00.00.0000"
@@ -211,6 +213,14 @@ begin
   end;
 end;
 
+function MsiProperties(const ParamName: String): String;
+begin
+  { The value is appended verbatim after msiexec's own options, where Windows Installer reads PROPERTY=VALUE pairs. }
+  Result := Trim(ExpandConstant('{param:' + ParamName + '|}'));
+  if Result <> '' then
+    Result := ' ' + Result;
+end;
+
 function RunInstaller(const Description, FileName, Params: String; var NeedsRestart: Boolean): String;
 var
   ResultCode: Integer;
@@ -286,7 +296,7 @@ begin
   begin
     { The Artifact Signing MSI installs into the profile of the account that runs it. }
     Result := RunInstaller('Artifact Signing Client Tools', ExpandConstant('{sys}\msiexec.exe'),
-      '/i "' + ExpandConstant('{tmp}\ArtifactSigningClientTools.msi') + '" /qn /norestart', NeedsRestart);
+      '/i "' + ExpandConstant('{tmp}\ArtifactSigningClientTools.msi') + '" /qn /norestart' + MsiProperties('ArtifactSigningProperties'), NeedsRestart);
     if (Result = '') and not ArtifactSigningInstalled then
       Log('Azure.CodeSigning.Dlib.dll is not in this account''s profile; the MSI installed for the account that ran it.');
   end;
@@ -294,7 +304,7 @@ begin
   if (Result = '') and WizardIsComponentSelected('azurecli') and not AzureCliInstalled then
   begin
     Result := RunInstaller('Azure CLI', ExpandConstant('{sys}\msiexec.exe'),
-      '/i "' + ExpandConstant('{tmp}\azure-cli-2.90.0-x64.msi') + '" /qn /norestart', NeedsRestart);
+      '/i "' + ExpandConstant('{tmp}\azure-cli-2.90.0-x64.msi') + '" /qn /norestart' + MsiProperties('AzureCliProperties'), NeedsRestart);
     if (Result = '') and not AzureCliInstalled then
       Result := 'az.cmd was not found after Azure CLI installed.';
   end;
