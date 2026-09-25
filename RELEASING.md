@@ -4,7 +4,7 @@ A release ships `SigningSuiteSetup-<version>.exe` (Inno Setup installer), `Signi
 
 ## 1. Pick the version
 
-The version is the release date plus a four-digit sequence: `YYYY.MM.DD.####`. The sequence starts at `0001` each day and is one more than the highest release already published for that date:
+The version is the release date plus a four-digit sequence: `YYYY.MM.DD.####`. The sequence is cumulative across all releases: one more than the highest sequence already published, whatever its date:
 
 ```bash
 gh release list -R jasonulbright/signing-suite

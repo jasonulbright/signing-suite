@@ -177,3 +177,80 @@ function Invoke-SigningBatch {
         [pscustomobject]$result
     }
 }
+
+function Invoke-SignatureRemovalBatch {
+    <#
+    .SYNOPSIS
+        Finds signable files under the given paths and removes the signature from each signed one.
+    .DESCRIPTION
+        The headless counterpart of the window's Remove signatures button. Unsigned files are reported as Skipped,
+        and -WhatIf lists what would be unsigned without changing anything.
+    .OUTPUTS
+        One object per file with Path, Name, Format, Status (Removed, Failed, Skipped, WhatIf), Detail, PreviousSigner,
+        PreviousThumbprint, SignatureState, Signer, SignerThumbprint, Timestamped.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)]
+        [string[]]$Path,
+
+        [int]$TimeoutSeconds = 120
+    )
+
+    $offClearSig = $null
+    $sip = Get-OfficeSipStatus | Where-Object { $_.Is64Bit -eq [Environment]::Is64BitProcess } | Select-Object -First 1
+    if ($sip) {
+        $offClearSig = $sip.OffClearSigPath
+    }
+
+    $unreadable = 0
+    $files = @(Find-SignableFile -Path $Path -UnreadableCount ([ref]$unreadable))
+    if ($unreadable -gt 0) {
+        Write-Warning "$unreadable path(s) could not be read (access denied, missing, or path too long)."
+    }
+
+    foreach ($file in $files) {
+        $info = Get-SignableFileInfo -LiteralPath $file
+        $result = [ordered]@{
+            Path               = $info.Path
+            Name               = $info.Name
+            Format             = $info.Format
+            Status             = $info.Status
+            Detail             = $info.Detail
+            PreviousSigner     = $null
+            PreviousThumbprint = $null
+            SignatureState     = $info.SignatureState
+            Signer             = $info.Signer
+            SignerThumbprint   = $info.SignerThumbprint
+            Timestamped        = [bool]$info.Timestamped
+        }
+
+        if ($info.Status -eq 'Skipped' -or -not $info.ProviderId) {
+            [pscustomobject]$result
+            continue
+        }
+        if ($info.SignatureState -eq 'NotSigned') {
+            $result.Status = 'Skipped'
+            $result.Detail = 'Not signed.'
+            [pscustomobject]$result
+            continue
+        }
+        # A -WhatIf preview still runs the checks that precede removal, so it reports the same failures as a real run.
+        $confirmed = $PSCmdlet.ShouldProcess($file, 'Remove signature')
+        try {
+            $removed = Remove-FileSignature -LiteralPath $file -OffClearSigPath $offClearSig -TimeoutSeconds $TimeoutSeconds -WhatIf:(-not $confirmed) -Confirm:$false
+            foreach ($name in 'Status', 'Detail', 'PreviousSigner', 'PreviousThumbprint', 'SignatureState', 'Signer', 'SignerThumbprint', 'Timestamped') {
+                $result[$name] = $removed.$name
+            }
+            if (-not $confirmed -and $removed.Status -eq 'Skipped' -and $removed.Detail -eq 'Not changed.') {
+                $result.Status = 'WhatIf'
+                $result.Detail = $info.Detail
+            }
+        }
+        catch {
+            $result.Status = 'Failed'
+            $result.Detail = $_.Exception.Message
+        }
+        [pscustomobject]$result
+    }
+}

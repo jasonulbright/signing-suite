@@ -123,6 +123,33 @@ Describe 'Command-line script' {
         ($output | Out-String) | Should -BeLike '*-TimestampMode*'
     }
 
+    It 'removes signatures with -RemoveSignature and exits 0' {
+        $removeRoot = [System.IO.Directory]::CreateDirectory((Join-Path $TestDrive 'cli-remove')).FullName
+        $signed = Join-Path $removeRoot 'signed.ps1'
+        [System.IO.File]::WriteAllText($signed, "Write-Output 1`r`n")
+        $pfx = Join-Path $TestDrive 'cli-remove.pfx'
+        New-TestPfx -Path $pfx
+        $certificate = Import-TestSigningCertificate -Path $pfx
+        try {
+            $null = Set-AuthenticodeSignature -LiteralPath $signed -Certificate $certificate -HashAlgorithm SHA256
+        }
+        finally {
+            Remove-TestKey -Certificate $certificate
+        }
+        (Get-FileSignatureState -LiteralPath $signed).State | Should -Be 'Untrusted'
+        $output = & $script:hostExe -NoProfile -ExecutionPolicy Bypass -File $script:cliScript -Path $removeRoot -RemoveSignature -WhatIf 2>&1
+        $LASTEXITCODE | Should -Be 0 -Because ($output | Out-String)
+        (Get-FileSignatureState -LiteralPath $signed).State | Should -Be 'Untrusted'
+        $output = & $script:hostExe -NoProfile -ExecutionPolicy Bypass -File $script:cliScript -Path $removeRoot -RemoveSignature 2>&1
+        $LASTEXITCODE | Should -Be 0 -Because ($output | Out-String)
+        (Get-FileSignatureState -LiteralPath $signed).State | Should -Be 'NotSigned'
+    }
+
+    It 'refuses signing options with -RemoveSignature' {
+        $output = & $script:hostExe -NoProfile -ExecutionPolicy Bypass -File $script:cliScript -Path $script:failRoot -RemoveSignature -DualSign 2>&1
+        $LASTEXITCODE | Should -Be 2
+        ($output | Out-String) | Should -BeLike '*-RemoveSignature*-DualSign*'
+    }
     It 'fails for a thumbprint that is not in the store' {
         $null = & $script:hostExe -NoProfile -ExecutionPolicy Bypass -File $script:cliScript -Path $script:failRoot -CertificateThumbprint '00' 2>&1
         $LASTEXITCODE | Should -Not -Be 0

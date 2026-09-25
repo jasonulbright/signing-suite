@@ -30,15 +30,21 @@
 .PARAMETER Verify
     Checks signatures instead of signing.
 
+.PARAMETER RemoveSignature
+    Removes the signature from every signed file instead of signing. -WhatIf lists what would be unsigned.
+
 .EXAMPLE
     powershell.exe -NoProfile -File .\Invoke-SigningSuite.ps1 -Path .\out -CertificateThumbprint 0123456789ABCDEF0123456789ABCDEF01234567 -TimestampMode Rfc3161 -TimestampServer http://timestamp.digicert.com
 
 .EXAMPLE
     powershell.exe -NoProfile -File .\Invoke-SigningSuite.ps1 -Path .\out\App.msix -ArtifactSigningMetadata .\metadata.json -TimestampMode Rfc3161 -TimestampServer http://timestamp.acs.microsoft.com
 
+.EXAMPLE
+    powershell.exe -NoProfile -File .\Invoke-SigningSuite.ps1 -Path .\out -RemoveSignature -WhatIf
+
 .NOTES
     ScriptName : Invoke-SigningSuite.ps1
-    Version    : 2026.09.15.0005
+    Version    : 2026.09.25.0006
 #>
 [CmdletBinding(SupportsShouldProcess, DefaultParameterSetName = 'Store')]
 param(
@@ -63,6 +69,9 @@ param(
 
     [Parameter(Mandatory, ParameterSetName = 'Verify')]
     [switch]$Verify,
+
+    [Parameter(Mandatory, ParameterSetName = 'Remove')]
+    [switch]$RemoveSignature,
 
     [ValidateSet('Auto', 'PowerShell', 'SignTool')]
     [string]$Engine = 'Auto',
@@ -114,13 +123,36 @@ Import-Module -Name (Join-Path $PSScriptRoot 'Module\SigningSuite\SigningSuite.p
 $tool = Find-SignTool -ConfiguredPath $SignToolPath
 $toolPath = if ($tool) { $tool.Path } else { '' }
 
-if ($Verify) {
+if ($Verify -or $RemoveSignature) {
+    $mode = if ($Verify) { '-Verify' } else { '-RemoveSignature' }
     $signingOnly = @('Engine', 'DigestAlgorithm', 'TimestampMode', 'TimestampServer', 'DualSign', 'SkipValid', 'ClearOfficeSignatures', 'Description', 'DescriptionUrl')
     $ignored = @($PSBoundParameters.Keys | Where-Object { $signingOnly -contains $_ })
     if ($ignored.Count -gt 0) {
-        Write-Error "These options apply to signing, not to -Verify: -$($ignored -join ', -')" -ErrorAction Continue
+        Write-Error "These options apply to signing, not to ${mode}: -$($ignored -join ', -')" -ErrorAction Continue
         exit 2
     }
+}
+
+# Preference variables set by -WhatIf and -Confirm stay in this script's scope; module functions see them only as parameters.
+$shouldProcess = @{ WhatIf = $WhatIfPreference }
+if ($PSBoundParameters.ContainsKey('Confirm')) {
+    $shouldProcess.Confirm = [bool]$PSBoundParameters['Confirm']
+}
+
+if ($RemoveSignature) {
+    $results = @(Invoke-SignatureRemovalBatch -Path $Path @shouldProcess)
+    $results
+    if ($results.Count -eq 0) {
+        Write-Error 'No signable files were found.' -ErrorAction Continue
+        exit 1
+    }
+    if (@($results | Where-Object Status -eq 'Failed').Count -gt 0) {
+        exit 1
+    }
+    exit 0
+}
+
+if ($Verify) {
     $unreadable = 0
     $results = @(Find-SignableFile -Path $Path -UnreadableCount ([ref]$unreadable) | ForEach-Object { Test-FileSignature -LiteralPath $_ -SignToolPath $toolPath })
     if ($unreadable -gt 0) {
@@ -149,8 +181,8 @@ $batch = @{
     ClearOfficeSignatures = $ClearOfficeSignatures
     Description           = $Description
     DescriptionUrl        = $DescriptionUrl
-    WhatIf                = $WhatIfPreference
 }
+$batch += $shouldProcess
 
 switch ($PSCmdlet.ParameterSetName) {
     'Store' {

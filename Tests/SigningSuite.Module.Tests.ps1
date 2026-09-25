@@ -783,6 +783,121 @@ Describe 'App packages' {
     }
 }
 
+Describe 'Signature removal' {
+
+    BeforeAll {
+        $script:removeRoot = [System.IO.Directory]::CreateDirectory((Join-Path $TestDrive 'remove [x]')).FullName
+        $pfx = Join-Path $TestDrive 'remove.pfx'
+        New-TestPfx -Path $pfx
+        $script:removeCertificate = Import-TestSigningCertificate -Path $pfx
+        [System.IO.File]::WriteAllText((Join-Path $removeRoot 'script.ps1'), "Write-Output 'signed'`r`n")
+        [System.IO.File]::WriteAllText((Join-Path $removeRoot 'legacy.vbs'), "WScript.Echo 1`r`n")
+        [System.IO.File]::WriteAllText((Join-Path $removeRoot 'job.wsf'), "<job><script language=`"VBScript`">WScript.Echo 1</script></job>`r`n")
+        New-TestPortableExecutable -Path (Join-Path $removeRoot 'library.dll')
+        [System.IO.File]::WriteAllText((Join-Path $removeRoot 'unsigned.ps1'), "Write-Output 1`r`n")
+        [System.IO.File]::WriteAllText((Join-Path $removeRoot 'whatif.ps1'), "Write-Output 1`r`n")
+        [System.IO.File]::WriteAllText((Join-Path $removeRoot 'readonly.ps1'), "Write-Output 1`r`n")
+        [System.IO.File]::WriteAllText((Join-Path $removeRoot 'payload.txt'), 'x')
+        & (Join-Path $env:windir 'System32\makecab.exe') (Join-Path $removeRoot 'payload.txt') (Join-Path $removeRoot 'archive.cab') *> $null
+        foreach ($name in 'script.ps1', 'legacy.vbs', 'job.wsf', 'library.dll', 'whatif.ps1', 'readonly.ps1', 'archive.cab') {
+            $null = Set-AuthenticodeSignature -LiteralPath (Join-Path $removeRoot $name) -Certificate $script:removeCertificate -HashAlgorithm SHA256
+        }
+        (Get-Item -LiteralPath (Join-Path $removeRoot 'readonly.ps1')).IsReadOnly = $true
+    }
+
+    AfterAll {
+        $readonly = [System.IO.FileInfo]::new((Join-Path $script:removeRoot 'readonly.ps1'))
+        if ($readonly.Exists) {
+            $readonly.IsReadOnly = $false
+        }
+        Remove-TestKey -Certificate $script:removeCertificate
+    }
+
+    It 'removes the signature from <Name> and leaves the content intact' -ForEach @(
+        @{ Name = 'script.ps1'; Content = "Write-Output 'signed'`r`n" }
+        @{ Name = 'legacy.vbs'; Content = "WScript.Echo 1`r`n" }
+        @{ Name = 'job.wsf'; Content = "<job><script language=`"VBScript`">WScript.Echo 1</script></job>`r`n" }
+        @{ Name = 'library.dll'; Content = $null }
+    ) {
+        $path = Join-Path $script:removeRoot $Name
+        (Get-FileSignatureState -LiteralPath $path).State | Should -Be 'Untrusted'
+        $result = Remove-FileSignature -LiteralPath $path
+        $result.Status | Should -Be 'Removed'
+        $result.Detail | Should -Be 'Signature from Signing Suite Test removed.'
+        $result.PreviousThumbprint | Should -Be $script:removeCertificate.Thumbprint
+        $result.SignatureState | Should -Be 'NotSigned'
+        (Get-FileSignatureState -LiteralPath $path).State | Should -Be 'NotSigned'
+        Test-FileUnlocked -Path $path | Should -BeTrue
+        if ($null -ne $Content) {
+            [System.IO.File]::ReadAllText($path) | Should -Be $Content
+        }
+    }
+
+    It 'skips a file that is not signed' {
+        $result = Remove-FileSignature -LiteralPath (Join-Path $script:removeRoot 'unsigned.ps1')
+        $result.Status | Should -Be 'Skipped'
+        $result.Detail | Should -Be 'Not signed.'
+    }
+
+    It 'changes nothing with -WhatIf' {
+        $path = Join-Path $script:removeRoot 'whatif.ps1'
+        $result = Remove-FileSignature -LiteralPath $path -WhatIf
+        $result.Status | Should -Be 'Skipped'
+        (Get-FileSignatureState -LiteralPath $path).State | Should -Be 'Untrusted'
+    }
+
+    It 'fails <Name> without touching it: <Detail>' -ForEach @(
+        @{ Name = 'readonly.ps1'; Status = 'Failed'; Detail = 'The file is read-only.' }
+        @{ Name = 'missing.ps1'; Status = 'Failed'; Detail = 'The file no longer exists.' }
+        @{ Name = 'archive.cab'; Status = 'Failed'; Detail = 'Windows cannot remove a cabinet signature; rebuild the cabinet without one.' }
+        @{ Name = 'payload.txt'; Status = 'Skipped'; Detail = 'Not a signable file type.' }
+    ) {
+        $path = Join-Path $script:removeRoot $Name
+        $result = Remove-FileSignature -LiteralPath $path
+        $result.Status | Should -Be $Status
+        $result.Detail | Should -Be $Detail
+        if ($Name -in 'readonly.ps1', 'archive.cab') {
+            (Get-FileSignatureState -LiteralPath $path).State | Should -Be 'Untrusted'
+        }
+    }
+
+    It 'removes both signatures from a dual-signed executable' -Skip:(-not $script:dlibAvailable) {
+        $path = Join-Path $script:removeRoot 'dual.dll'
+        New-TestPortableExecutable -Path $path
+        $identity = New-TestDlibIdentity -Folder $script:removeRoot
+        $dlib = Get-TestDigestSignLibrary -Architecture 'x64'
+        $signed = Invoke-FileSigning -LiteralPath $path -Engine SignTool -SignToolPath $script:signTool.Path -DlibPath $dlib -MetadataPath $identity.MetadataPath -CertificateFile $identity.CertificateFile -DualSign
+        $signed.Status | Should -Be 'Signed'
+        $signed.Passes | Should -Be 2
+        (Remove-FileSignature -LiteralPath $path).Status | Should -Be 'Removed'
+        (Test-FileSignature -LiteralPath $path -SignToolPath $script:signTool.Path).State | Should -Be 'NotSigned'
+    }
+
+    It 'lists and unsigns a folder as a batch' {
+        $batchRoot = [System.IO.Directory]::CreateDirectory((Join-Path $TestDrive 'remove-batch')).FullName
+        [System.IO.File]::WriteAllText((Join-Path $batchRoot 'signed.ps1'), "Write-Output 1`r`n")
+        [System.IO.File]::WriteAllText((Join-Path $batchRoot 'plain.vbs'), "WScript.Echo 1`r`n")
+        [System.IO.File]::WriteAllText((Join-Path $batchRoot 'notes.txt'), 'x')
+        $null = Set-AuthenticodeSignature -LiteralPath (Join-Path $batchRoot 'signed.ps1') -Certificate $script:removeCertificate -HashAlgorithm SHA256
+
+        $preview = @(Invoke-SignatureRemovalBatch -Path $batchRoot, (Join-Path $script:removeRoot 'archive.cab') -WhatIf)
+        @($preview | Where-Object Status -eq 'WhatIf' | ForEach-Object Name) | Should -Be @('signed.ps1')
+        @($preview | Where-Object Name -eq 'plain.vbs')[0].Status | Should -Be 'Skipped'
+        @($preview | Where-Object Name -eq 'archive.cab')[0].Status | Should -Be 'Failed'
+        (Get-FileSignatureState -LiteralPath (Join-Path $batchRoot 'signed.ps1')).State | Should -Be 'Untrusted'
+
+        $results = @(Invoke-SignatureRemovalBatch -Path $batchRoot, (Join-Path $batchRoot 'notes.txt'))
+        $byName = @{}
+        foreach ($result in $results) {
+            $byName[$result.Name] = $result
+        }
+        $byName['signed.ps1'].Status | Should -Be 'Removed'
+        $byName['signed.ps1'].PreviousSigner | Should -Be 'Signing Suite Test'
+        $byName['plain.vbs'].Status | Should -Be 'Skipped'
+        $byName['notes.txt'].Status | Should -Be 'Skipped'
+        (Get-FileSignatureState -LiteralPath (Join-Path $batchRoot 'signed.ps1')).State | Should -Be 'NotSigned'
+    }
+}
 Describe 'Office VBA signing' {
 
     BeforeAll {

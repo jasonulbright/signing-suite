@@ -231,6 +231,7 @@
       <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
         <Button x:Name="ExportButton" Content="_Export CSV..." Margin="0,0,8,0" ToolTip="Ctrl+E"/>
         <Button x:Name="VerifyButton" Content="_Verify" Margin="0,0,8,0" ToolTip="Check the signatures of the listed files"/>
+        <Button x:Name="RemoveSignatureButton" Content="Remove signat_ures..." Margin="0,0,8,0" IsEnabled="False" ToolTip="Remove the signatures from the signed files the current filter shows"/>
         <Button x:Name="CancelButton" Content="Cancel" Margin="0,0,8,0" IsEnabled="False"/>
         <Button x:Name="SignButton" Content="Sign 0 files" FontWeight="SemiBold" Padding="20,6" IsEnabled="False" ToolTip="Ctrl+Enter"/>
       </StackPanel>

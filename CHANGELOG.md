@@ -1,5 +1,19 @@
 # Changelog
 
+## [2026.09.25.0006] - 2026-09-25
+
+### Features
+
+- Confirm every signing run in a dialog that shows the signing identity, files and options.
+- Warn before signing files that carry another signer's signature or would lack a timestamp.
+- Remove signatures from scripts, executables, installers, app packages and Office files.
+- Remove signatures from the command line with -RemoveSignature.
+- Pass Windows Installer properties to the Artifact Signing and Azure CLI prerequisites during setup.
+
+### Fixes
+
+- Keep the file list unchanged when a signing run is cancelled before it starts.
+
 ## [2026.09.15.0005] - 2026-09-15
 
 ### Delivery
