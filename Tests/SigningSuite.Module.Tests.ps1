@@ -400,6 +400,31 @@ public static string[] Split(string commandLine)
         (Find-SignTool -ConfiguredPath $copy).Source | Should -Be 'Configured'
     }
 
+    It 'accepts only Microsoft-signed signtool candidates' {
+        $unsigned = Join-Path $TestDrive 'publisher\signtool.exe'
+        [void][System.IO.Directory]::CreateDirectory((Split-Path -Parent $unsigned))
+        New-TestPortableExecutable -Path $unsigned
+        Test-SignToolPublisher -LiteralPath $unsigned | Should -BeFalse
+        Test-SignToolPublisher -LiteralPath (Join-Path $TestDrive 'publisher\missing.exe') | Should -BeFalse
+        Test-SignToolPublisher -LiteralPath (Join-Path $env:windir 'System32\notepad.exe') | Should -BeTrue
+    }
+
+    It 'skips a signtool.exe on PATH that Microsoft did not sign' {
+        $folder = [System.IO.Directory]::CreateDirectory((Join-Path $TestDrive 'path-signtool')).FullName
+        New-TestPortableExecutable -Path (Join-Path $folder 'signtool.exe')
+        $saved = $env:PATH
+        try {
+            $env:PATH = "$folder;$saved"
+            $found = Find-SignTool -Architecture 'arm64' -WarningAction SilentlyContinue
+            if ($found) {
+                $found.Path | Should -Not -Be (Join-Path $folder 'signtool.exe')
+            }
+        }
+        finally {
+            $env:PATH = $saved
+        }
+    }
+
     It 'ignores a configured signtool path without a valid signature' {
         $fake = Join-Path $TestDrive 'unsigned\signtool.exe'
         [void][System.IO.Directory]::CreateDirectory((Split-Path -Parent $fake))
@@ -531,7 +556,16 @@ Describe 'Engine selection' {
         Test-SkipValidSignature -SignatureState $State -Timestamped $Timestamped -TimestampMode $Mode | Should -Be $Expected
     }
 
+    It 'skips a valid signature only from the expected certificate: <Case>' -ForEach @(
+        @{ Case = 'same certificate'; Signer = 'AA'; Expected = 'AA'; Result = $true }
+        @{ Case = 'another publisher'; Signer = 'BB'; Expected = 'AA'; Result = $false }
+        @{ Case = 'identity without a known certificate'; Signer = 'BB'; Expected = ''; Result = $true }
+    ) {
+        Test-SkipValidSignature -SignatureState 'Valid' -Timestamped $true -TimestampMode 'Rfc3161' -SignerThumbprint $Signer -ExpectedThumbprint $Expected | Should -Be $Result
+    }
+
     It 'shortens signature states for the file list' {
+        ConvertTo-SignatureText -State 'Revoked' -Signer 'Contoso' | Should -Be 'Revoked: Contoso'
         ConvertTo-SignatureText -State 'Valid' -Signer 'Contoso' | Should -Be 'Valid: Contoso'
         ConvertTo-SignatureText -State 'NotSigned' -Signer $null | Should -Be 'Not signed'
         ConvertTo-SignatureText -State '' -Signer $null | Should -Be ''
@@ -666,6 +700,41 @@ Describe 'Signing with the PowerShell engine' {
     It 'reports a missing file and a timestamp request without a server' {
         (Invoke-FileSigning -LiteralPath (Join-Path $script:psRoot 'missing.ps1') -Engine PowerShell -Certificate $script:certificate).Detail | Should -Be 'The file no longer exists.'
         (Invoke-FileSigning -LiteralPath (Join-Path $script:psRoot 'script.ps1') -Engine PowerShell -Certificate $script:certificate -TimestampMode Authenticode).Detail | Should -BeLike 'A timestamp was requested*'
+    }
+
+    It 'checks revocation when verifying without failing an offline or self-signed chain' {
+        $verification = Test-FileSignature -LiteralPath (Join-Path $script:psRoot 'script.ps1')
+        $verification.State | Should -Be 'Untrusted'
+        (Test-FileSignature -LiteralPath (Join-Path $script:psRoot 'script.ps1') -SkipRevocation).State | Should -Be 'Untrusted'
+    }
+
+    It 'leaves Office VBA signatures in place when a signing precondition fails: <Case>' -ForEach @(
+        @{ Case = 'PowerShell engine with RFC 3161'; Engine = 'PowerShell'; Mode = 'Rfc3161'; Tool = $null; Detail = 'RFC 3161 timestamps need the SignTool engine*' }
+        @{ Case = 'PowerShell engine without a certificate'; Engine = 'PowerShell'; Mode = 'None'; Tool = $null; Detail = 'The PowerShell engine needs a certificate*'; NoCertificate = $true }
+        @{ Case = 'SignTool engine without signtool'; Engine = 'SignTool'; Mode = 'None'; Tool = 'missing'; Detail = 'signtool.exe was not found*' }
+    ) {
+        $workbook = Join-Path $script:psRoot "clear-$Engine-$Mode.xlsm"
+        New-TestZip -Path $workbook -Entries @{ '[Content_Types].xml' = '<Types/>'; 'xl/vbaProject.bin' = 'x' }
+        $marker = Join-Path $script:psRoot "clear-$Engine-$Mode.marker"
+        $clearer = Join-Path $script:psRoot 'offclearsig-stub.cmd'
+        [System.IO.File]::WriteAllText($clearer, "@echo cleared> `"%~dpn1.marker`"`r`n")
+        $parameters = @{
+            LiteralPath           = $workbook
+            Engine                = $Engine
+            TimestampMode         = $Mode
+            TimestampServer       = 'http://timestamp.digicert.com'
+            ClearOfficeSignatures = $true
+            OffClearSigPath       = $clearer
+            SignToolPath          = if ($Tool) { Join-Path $script:psRoot 'missing\signtool.exe' } else { '' }
+        }
+        if (-not $NoCertificate) {
+            $parameters.Certificate = $script:certificate
+        }
+        Mock -ModuleName SigningSuite Get-SipSubject { [pscustomobject]@{ Supported = $true; Guid = [guid]::Empty; Name = 'Office'; ErrorCode = 0 } }
+        $result = Invoke-FileSigning @parameters
+        $result.Status | Should -Be 'Failed'
+        $result.Detail | Should -BeLike $Detail
+        [System.IO.File]::Exists($marker) | Should -BeFalse -Because 'VBA signatures must stay until signing can proceed'
     }
 
     It 'verifies without signtool' {

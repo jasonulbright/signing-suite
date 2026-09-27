@@ -72,7 +72,9 @@ namespace SigningSuite.Native
         private const uint WTD_CHOICE_FILE = 1;
         private const uint WTD_STATEACTION_VERIFY = 1;
         private const uint WTD_STATEACTION_CLOSE = 2;
+        private const uint WTD_REVOKE_WHOLECHAIN = 1;
         private const uint WTD_REVOCATION_CHECK_NONE = 0x10;
+        private const uint WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT = 0x80;
         private const uint WTD_CACHE_ONLY_URL_RETRIEVAL = 0x1000;
 
         [DllImport("wintrust.dll")]
@@ -105,7 +107,13 @@ namespace SigningSuite.Native
 
         public static EmbeddedSignature VerifyEmbedded(string path)
         {
-            // Only the embedded signature is checked: WTD_CHOICE_FILE never consults catalogs, and no revocation or network retrieval happens.
+            return VerifyEmbedded(path, false);
+        }
+
+        public static EmbeddedSignature VerifyEmbedded(string path, bool checkRevocation)
+        {
+            // Only the embedded signature is checked: WTD_CHOICE_FILE never consults catalogs. Without checkRevocation no
+            // revocation check or network retrieval happens; with it the chain below the root is checked online.
             Guid action = new Guid("00AAC56B-CD44-11d0-8CC2-00C04FC295EE");
             WINTRUST_FILE_INFO fileInfo = new WINTRUST_FILE_INFO();
             fileInfo.cbStruct = (uint)Marshal.SizeOf(typeof(WINTRUST_FILE_INFO));
@@ -119,11 +127,11 @@ namespace SigningSuite.Native
                 Marshal.StructureToPtr(fileInfo, filePointer, false);
                 data.cbStruct = (uint)Marshal.SizeOf(typeof(WINTRUST_DATA));
                 data.dwUIChoice = WTD_UI_NONE;
-                data.fdwRevocationChecks = WTD_REVOKE_NONE;
+                data.fdwRevocationChecks = checkRevocation ? WTD_REVOKE_WHOLECHAIN : WTD_REVOKE_NONE;
                 data.dwUnionChoice = WTD_CHOICE_FILE;
                 data.pFile = filePointer;
                 data.dwStateAction = WTD_STATEACTION_VERIFY;
-                data.dwProvFlags = WTD_REVOCATION_CHECK_NONE | WTD_CACHE_ONLY_URL_RETRIEVAL;
+                data.dwProvFlags = checkRevocation ? WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT : (WTD_REVOCATION_CHECK_NONE | WTD_CACHE_ONLY_URL_RETRIEVAL);
 
                 result.Status = WinVerifyTrust(IntPtr.Zero, ref action, ref data);
                 result.Message = new Win32Exception(result.Status).Message;

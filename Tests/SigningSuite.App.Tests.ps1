@@ -432,6 +432,29 @@ Describe 'Window behavior' -Skip:(-not $script:isSta) {
         }
     }
 
+    It 'signs files that another publisher validly signed, even with skip-valid on' {
+        $certificate = New-TestCertificate -Subject 'CN=Our Publisher'
+        $vendor = $script:Rows | Where-Object Name -eq 'two.vbs'
+        $saved = @{ Status = $vendor.Status; SignatureState = $vendor.SignatureState; Signer = $vendor.Signer; SignerThumbprint = $vendor.SignerThumbprint; Timestamped = $vendor.Timestamped }
+        try {
+            $script:Identity.Certificate = $certificate
+            $script:ui.SkipValidCheck.IsChecked = $true
+            Select-ComboTag -Combo $script:ui.TimestampModeCombo -Tag 'None'
+            Update-FileRow -Path $vendor.Path -Changes @{ Status = 'Ready'; SignatureState = 'Valid'; Signer = 'Vendor'; SignerThumbprint = 'AABBCC'; Timestamped = $true }
+            @((Get-SigningCandidates).Rows | ForEach-Object Name) | Should -Contain 'two.vbs'
+            Update-FileRow -Path $vendor.Path -Changes @{ SignerThumbprint = $certificate.Thumbprint; Signer = 'Our Publisher' }
+            $candidates = Get-SigningCandidates
+            @($candidates.Rows | ForEach-Object Name) | Should -Not -Contain 'two.vbs'
+            $summary = Get-SigningRunSummary -Identity $script:Identity -Options (Get-SigningOptions) -Rows @($candidates.Rows) -SkippedRows @($candidates.SkippedRows)
+            $summary.FileText | Should -BeLike '*1 already validly signed by Our Publisher is skipped.'
+        }
+        finally {
+            Update-FileRow -Path $vendor.Path -Changes $saved
+            $script:Identity.Certificate = $null
+            $certificate.Dispose()
+        }
+    }
+
     It 'describes an Artifact Signing identity from its metadata file' {
         $metadata = Join-Path $TestDrive 'confirm-metadata.json'
         $null = New-ArtifactSigningMetadata -Path $metadata -Endpoint 'https://eus.codesigning.azure.net/' -AccountName 'acct' -CertificateProfileName 'profile'

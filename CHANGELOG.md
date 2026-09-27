@@ -1,5 +1,18 @@
 # Changelog
 
+## [2026.09.27.0007] - 2026-09-27
+
+### Security
+
+- Run signtool.exe only when it carries a valid Microsoft signature.
+
+### Fixes
+
+- Sign macros that another publisher validly signed instead of skipping them.
+- Name the skipped signers in the signing confirmation.
+- Check revocation during Verify and report revoked signers as Revoked.
+- Keep existing VBA signatures when a signing precondition fails.
+
 ## [2026.09.25.0006] - 2026-09-25
 
 ### Features

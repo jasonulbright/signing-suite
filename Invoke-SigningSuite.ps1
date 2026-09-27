@@ -44,7 +44,7 @@
 
 .NOTES
     ScriptName : Invoke-SigningSuite.ps1
-    Version    : 2026.09.25.0006
+    Version    : 2026.09.27.0007
 #>
 [CmdletBinding(SupportsShouldProcess, DefaultParameterSetName = 'Store')]
 param(
@@ -163,7 +163,7 @@ if ($Verify) {
         Write-Error 'No signable files were found.' -ErrorAction Continue
         exit 1
     }
-    if (@($results | Where-Object { $_.State -in 'Invalid', 'Unknown' }).Count -gt 0) {
+    if (@($results | Where-Object { $_.State -in 'Invalid', 'Revoked', 'Unknown' }).Count -gt 0) {
         exit 1
     }
     exit 0

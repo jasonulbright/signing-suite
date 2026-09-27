@@ -22,7 +22,7 @@
 
 .NOTES
     ScriptName : start-signingsuite.ps1
-    Version    : 2026.09.25.0006
+    Version    : 2026.09.27.0007
 #>
 [CmdletBinding()]
 param(
@@ -926,30 +926,63 @@ function Get-VisibleRows {
     @($script:Rows | Where-Object { Test-RowVisible -Row $_ })
 }
 
+$script:CertificateFileThumbprints = @{}
+
+function Get-IdentityThumbprint {
+    <#
+    .SYNOPSIS
+        Thumbprint of the certificate the selected identity signs with, or nothing when the service issues it per run.
+    #>
+    switch ($script:Identity.Source) {
+        'Store' {
+            if ($script:Identity.Certificate) {
+                return $script:Identity.Certificate.Thumbprint
+            }
+        }
+        'Dlib' {
+            $file = $script:Identity.CertificateFile
+            if ($file -and [System.IO.File]::Exists($file)) {
+                if (-not $script:CertificateFileThumbprints.ContainsKey($file)) {
+                    try {
+                        $certificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($file)
+                        $script:CertificateFileThumbprints[$file] = $certificate.Thumbprint
+                        $certificate.Dispose()
+                    }
+                    catch {
+                        $script:CertificateFileThumbprints[$file] = $null
+                    }
+                }
+                return $script:CertificateFileThumbprints[$file]
+            }
+        }
+    }
+}
+
 function Get-SigningCandidates {
     $skipValid = [bool]$script:ui.SkipValidCheck.IsChecked
     $timestampMode = Get-ComboTag -Combo $script:ui.TimestampModeCombo
     if ($timestampMode -notin 'None', 'Rfc3161', 'Authenticode') {
         $timestampMode = 'None'
     }
+    $expectedThumbprint = Get-IdentityThumbprint
     $pending = @()
-    $skippedValid = 0
+    $skipped = @()
     foreach ($row in Get-VisibleRows) {
         if ($row.Status -ne 'Ready' -and $row.Status -ne 'Failed') {
             continue
         }
-        if ($skipValid -and $row.Status -eq 'Ready' -and (Test-SkipValidSignature -SignatureState $row.SignatureState -Timestamped ([bool]$row.Timestamped) -TimestampMode $timestampMode)) {
-            $skippedValid++
+        if ($skipValid -and $row.Status -eq 'Ready' -and (Test-SkipValidSignature -SignatureState $row.SignatureState -Timestamped ([bool]$row.Timestamped) -TimestampMode $timestampMode -SignerThumbprint $row.SignerThumbprint -ExpectedThumbprint $expectedThumbprint)) {
+            $skipped += $row
             continue
         }
         $pending += $row
     }
-    [pscustomobject]@{ Rows = $pending; SkippedValid = $skippedValid }
+    [pscustomobject]@{ Rows = $pending; SkippedValid = $skipped.Count; SkippedRows = $skipped }
 }
 
 function Get-RemovalCandidates {
     # Cabinets and catalogs are signed formats without a removal path, so they are never offered.
-    @(Get-VisibleRows | Where-Object { $_.ProviderId -and $_.ProviderId -notin 'Cabinet', 'Catalog' -and $_.SignatureState -in 'Valid', 'Untrusted', 'Invalid' })
+    @(Get-VisibleRows | Where-Object { $_.ProviderId -and $_.ProviderId -notin 'Cabinet', 'Catalog' -and $_.SignatureState -in 'Valid', 'Untrusted', 'Invalid', 'Revoked' })
 }
 
 function Get-FormatCountText {
@@ -979,7 +1012,9 @@ function Get-SigningRunSummary {
         [AllowEmptyCollection()]
         [object[]]$Rows,
 
-        [string]$Engine = 'Auto'
+        [string]$Engine = 'Auto',
+
+        [object[]]$SkippedRows = @()
     )
 
     $identityLines = [System.Collections.Generic.List[string]]::new()
@@ -1041,7 +1076,7 @@ function Get-SigningRunSummary {
 
     $count = $Rows.Count
     $fileText = "Sign $count file$(if ($count -ne 1) { 's' }): $(Get-FormatCountText -Rows $Rows)."
-    $signed = @($Rows | Where-Object { $_.SignatureState -in 'Valid', 'Untrusted', 'Invalid' })
+    $signed = @($Rows | Where-Object { $_.SignatureState -in 'Valid', 'Untrusted', 'Invalid', 'Revoked' })
     if ($signed.Count -gt 0) {
         $others = @($signed | Where-Object { -not $selectedThumbprint -or $_.SignerThumbprint -ne $selectedThumbprint })
         if ($others.Count -gt 0) {
@@ -1050,6 +1085,14 @@ function Get-SigningRunSummary {
         }
         else {
             $fileText += " $($signed.Count) already signed with this certificate and will be signed again."
+        }
+    }
+
+    if ($SkippedRows.Count -gt 0) {
+        $skippedSigners = @($SkippedRows | ForEach-Object { if ($_.Signer) { $_.Signer } else { 'unknown signer' } } | Sort-Object -Unique)
+        $fileText += " $($SkippedRows.Count) already validly signed by $($skippedSigners -join ', ') $(if ($SkippedRows.Count -eq 1) { 'is' } else { 'are' }) skipped."
+        if (-not $selectedThumbprint) {
+            $warnings.Add('Skipped files are checked for a valid signature from any signer, because this identity receives its certificate per run. Valid means trusted on this PC; clients trust only publishers in their Trusted Publishers store.')
         }
     }
 
@@ -1597,7 +1640,7 @@ function Invoke-Signing {
         [void](Show-Message -Icon Warning -Text 'No files were signed; the Details column shows why.')
         return
     }
-    $summary = Get-SigningRunSummary -Identity $script:Identity -Options $options -Rows $itemRows.ToArray() -Engine $requested
+    $summary = Get-SigningRunSummary -Identity $script:Identity -Options $options -Rows $itemRows.ToArray() -Engine $requested -SkippedRows @($candidates.SkippedRows)
     if (-not (Show-RunConfirmation -Summary $summary)) {
         return
     }
@@ -1724,7 +1767,7 @@ function Invoke-Verify {
 
         Switch-BusyState -Busy $false
         $stats = $script:SignStats
-        $parts = foreach ($state in 'Valid', 'Untrusted', 'Invalid', 'NotSigned', 'Unknown') {
+        $parts = foreach ($state in 'Valid', 'Untrusted', 'Revoked', 'Invalid', 'NotSigned', 'Unknown') {
             if ($stats.States[$state]) {
                 $label = switch ($state) { 'NotSigned' { 'not signed' } 'Unknown' { 'unreadable' } default { $state.ToLowerInvariant() } }
                 "$($stats.States[$state]) $label"

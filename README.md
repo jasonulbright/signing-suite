@@ -6,7 +6,7 @@
 [![PowerShell](https://img.shields.io/badge/PowerShell-5.1-5391FE)](#requirements)
 [![License](https://img.shields.io/github/license/jasonulbright/signing-suite)](LICENSE)
 
-**Download:** [SigningSuiteSetup-2026.09.25.0006.exe](https://github.com/jasonulbright/signing-suite/releases/download/v2026.09.25.0006/SigningSuiteSetup-2026.09.25.0006.exe) (installer) or [SigningSuite-2026.09.25.0006.zip](https://github.com/jasonulbright/signing-suite/releases/download/v2026.09.25.0006/SigningSuite-2026.09.25.0006.zip) (portable)
+**Download:** [SigningSuiteSetup-2026.09.27.0007.exe](https://github.com/jasonulbright/signing-suite/releases/download/v2026.09.27.0007/SigningSuiteSetup-2026.09.27.0007.exe) (installer) or [SigningSuite-2026.09.27.0007.zip](https://github.com/jasonulbright/signing-suite/releases/download/v2026.09.27.0007/SigningSuite-2026.09.27.0007.zip) (portable)
 
 WPF tool that Authenticode-signs scripts, executables, installers, cabinets, catalogs, app packages and the VBA projects in Office files. Drop files or folders onto the window; each file shows its format, its current signature and whether it can be signed, and one button signs the rest.
 
@@ -62,7 +62,7 @@ Windows decides whether it can sign a file by asking the Subject Interface Packa
 | Requirement | Details |
 |---|---|
 | PowerShell | Windows PowerShell 5.1. PowerShell 7 is not supported: the window restarts itself in Windows PowerShell, and the command-line script refuses to run. |
-| signtool.exe | Optional. From the Windows SDK ("Signing Tools for Desktop Apps"). Needed for app packages, RFC 3161 timestamps, dual signing, Artifact Signing and digest signing libraries. The tool finds the newest SDK build, or you choose the file. |
+| signtool.exe | Optional. From the Windows SDK ("Signing Tools for Desktop Apps"). Needed for app packages, RFC 3161 timestamps, dual signing, Artifact Signing and digest signing libraries. The tool finds the newest SDK build, or you choose the file. A signtool.exe from the SDK, from PATH or from the chosen path is used only with a valid Microsoft signature. |
 | Office SIPs | Needed for Office files: [Microsoft Office Subject Interface Packages for Digitally Signing VBA Projects](https://www.microsoft.com/download/details.aspx?id=56617), registered with `regsvr32` for the bitness of the PowerShell process. `msosipx.dll` covers the Open XML formats, `msosip.dll` the binary formats. The Office installation itself is not used. |
 | Artifact Signing | Optional. [Artifact Signing Client Tools](https://learn.microsoft.com/azure/artifact-signing/how-to-signing-integrations) (`winget install -e --id Microsoft.Azure.ArtifactSigningClientTools`), an account, a certificate profile and the Certificate Profile Signer role. |
 | Rights | Standard user. Registering the Office SIPs needs administrator rights once. |
@@ -102,7 +102,7 @@ powershell.exe -NoProfile -STA -File .\start-signingsuite.ps1 'C:\Build\Output' 
 | File digest | SHA256, SHA384 or SHA512. |
 | Timestamp | RFC 3161 (SignTool), Authenticode legacy, or None. The server defaults to `http://timestamp.digicert.com`. |
 | Dual sign | Executables and cabinets get a SHA1 signature with an Authenticode timestamp, then the selected digest appended. Other formats hold one signature and are signed once. |
-| Skip files that already have a valid signature | Leaves validly signed files alone; they are counted in the summary. |
+| Skip files already validly signed by this identity | Leaves a file alone only when its valid signature comes from the selected certificate. A file validly signed by another publisher is signed again, because clients trust only the publishers in their Trusted Publishers store. Artifact Signing issues a certificate per run, so with that identity any valid signature is skipped and the confirmation dialog names the signers. |
 | Remove existing VBA signatures | Runs `offclearsig.exe` from the Office SIP folder before signing Office files. The confirmation dialog names the affected files. |
 | Description, description URL | signtool `/d` and `/du`. |
 
@@ -119,7 +119,7 @@ powershell.exe -NoProfile -STA -File .\start-signingsuite.ps1 'C:\Build\Output' 
 - Office files are signed three times: the Office SIPs add the legacy, agile and V3 VBA signatures on successive passes. A file that already has the legacy and agile signatures only receives the V3 signature again; remove existing signatures to re-sign from scratch.
 - Open XML Office files count as macro files when the package contains `vbaProject.bin`. Binary Excel and Word files count when they contain a `_VBA_PROJECT` storage. PowerPoint, Visio, Project and Publisher binary files are signed and reported as Skipped if they turn out to have no VBA project. Office owner files (`~$*`) are ignored.
 - App packages are checked before signing: the manifest `Publisher` must equal the certificate subject, which signtool otherwise reports as `0x8007000B`.
-- The Signature column reads the embedded signature with WinVerifyTrust. It does not report catalog signatures, so a copy of a Windows system file shows as not signed until you sign it.
+- The Signature column reads the embedded signature with WinVerifyTrust. It does not report catalog signatures, so a copy of a Windows system file shows as not signed until you sign it. The list does not check revocation and makes no network calls; **Verify** and `-Verify` check revocation online and report a revoked signer as **Revoked**. Offline, Verify reports the signature as untrusted with the reason.
 - Status: **Ready**, **Signed**, **Failed** (Details has the reason), **Skipped** (not signable, empty, or no VBA project). **Sign** retries Failed files.
 - Files are signed in place. Read-only files are not changed.
 - A banner appears when Office files are listed and the Office SIP is missing, partly registered, or registered only for the other bitness, with a download link or a restart into the matching Windows PowerShell.
@@ -166,7 +166,7 @@ powershell.exe -NoProfile -File .\Invoke-SigningSuite.ps1 -Path .\out\App.msix -
 # Digest signing library with its certificate
 powershell.exe -NoProfile -File .\Invoke-SigningSuite.ps1 -Path .\out -DlibPath C:\Tools\Hsm.Dlib.dll -DlibMetadata .\hsm.json -CertificateFile .\signer.cer
 
-# Verify; exits 1 when a signature is invalid or unreadable
+# Verify with an online revocation check; exits 1 when a signature is invalid, revoked or unreadable
 powershell.exe -NoProfile -File .\Invoke-SigningSuite.ps1 -Path .\out -Verify
 
 # Remove signatures; -WhatIf lists the signed files without changing them

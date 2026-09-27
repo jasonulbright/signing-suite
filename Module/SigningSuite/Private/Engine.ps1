@@ -77,6 +77,7 @@ function ConvertTo-SignatureText {
     switch ($State) {
         'NotSigned' { 'Not signed' }
         'Valid' { "Valid: $Signer" }
+        'Revoked' { "Revoked: $Signer" }
         'Untrusted' { "Untrusted: $Signer" }
         'Invalid' { 'Invalid (file changed)' }
         'Unknown' { 'Unreadable' }
@@ -91,6 +92,8 @@ function Test-SkipValidSignature {
     .DESCRIPTION
         A valid signature without the timestamp a run asks for is not skipped: a run that failed on an unreachable
         timestamp server leaves such a file behind, and skipping it would hide the missing timestamp for good.
+        With ExpectedThumbprint, a valid signature from any other certificate is not skipped either: clients that
+        trust only the selected publisher would otherwise block the file.
     #>
     [CmdletBinding()]
     [OutputType([bool])]
@@ -101,9 +104,20 @@ function Test-SkipValidSignature {
         [bool]$Timestamped,
 
         [ValidateSet('None', 'Rfc3161', 'Authenticode')]
-        [string]$TimestampMode = 'None'
+        [string]$TimestampMode = 'None',
+
+        [AllowEmptyString()]
+        [AllowNull()]
+        [string]$SignerThumbprint,
+
+        [AllowEmptyString()]
+        [AllowNull()]
+        [string]$ExpectedThumbprint
     )
 
+    if ($ExpectedThumbprint -and $SignerThumbprint -ne $ExpectedThumbprint) {
+        return $false
+    }
     $SignatureState -eq 'Valid' -and ($TimestampMode -eq 'None' -or $Timestamped)
 }
 
