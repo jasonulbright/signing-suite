@@ -23,12 +23,12 @@ function Find-SignTool {
 
     if ($ConfiguredPath) {
         if ([System.IO.File]::Exists($ConfiguredPath)) {
-            # The path comes from a per-user settings file; an unsigned or tampered binary there would run with every signing pass.
-            $signature = Get-FileSignatureState -LiteralPath $ConfiguredPath
-            if ($signature.State -eq 'Valid') {
+            # The path comes from a per-user settings file; a binary there runs with every signing pass and receives the
+            # signing identity, so it must be Microsoft's.
+            if (Test-SignToolPublisher -LiteralPath $ConfiguredPath) {
                 return New-SignToolInfo -Path $ConfiguredPath -Source 'Configured'
             }
-            Write-Warning "The configured signtool path is ignored because it does not carry a valid signature: $ConfiguredPath"
+            Write-Warning "The configured signtool path is ignored because it does not carry a valid Microsoft signature: $ConfiguredPath"
         }
         else {
             Write-Verbose "Configured signtool path does not exist: $ConfiguredPath"
@@ -82,14 +82,61 @@ function Find-SignTool {
             [pscustomobject]@{ Path = $flat; Version = [version]'0.0' }
         }
     }
-    $best = $candidates | Sort-Object -Property Version -Descending | Select-Object -First 1
-    if ($best) {
-        return New-SignToolInfo -Path $best.Path -Source 'WindowsSdk'
+    foreach ($candidate in @($candidates | Sort-Object -Property Version -Descending)) {
+        if (Test-SignToolPublisher -LiteralPath $candidate.Path) {
+            return New-SignToolInfo -Path $candidate.Path -Source 'WindowsSdk'
+        }
+        Write-Warning "signtool.exe is ignored because it does not carry a valid Microsoft signature: $($candidate.Path)"
     }
 
-    $onPath = Get-Command -Name signtool.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($onPath) {
-        return New-SignToolInfo -Path $onPath.Source -Source 'Path'
+    # A folder earlier on PATH can be user-writable, so a PATH match is used only with a valid Microsoft signature.
+    foreach ($onPath in @(Get-Command -Name signtool.exe -CommandType Application -All -ErrorAction SilentlyContinue)) {
+        if (Test-SignToolPublisher -LiteralPath $onPath.Source) {
+            return New-SignToolInfo -Path $onPath.Source -Source 'Path'
+        }
+        Write-Warning "signtool.exe on PATH is ignored because it does not carry a valid Microsoft signature: $($onPath.Source)"
+    }
+}
+
+function Test-SignToolPublisher {
+    <#
+    .SYNOPSIS
+        True when a file carries a valid signature from Microsoft Corporation that chains to a Microsoft root.
+    .DESCRIPTION
+        The embedded signature is checked first; a catalog signature counts too, because some Windows SDK layouts
+        ship signtool.exe covered by a catalog. Revocation is not checked, so the test needs no network.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory)]
+        [string]$LiteralPath
+    )
+
+    if (-not [System.IO.File]::Exists($LiteralPath)) {
+        return $false
+    }
+    $signature = Get-AuthenticodeSignature -LiteralPath $LiteralPath -ErrorAction SilentlyContinue
+    if (-not $signature -or $signature.Status -ne 'Valid' -or -not $signature.SignerCertificate) {
+        return $false
+    }
+    $signer = $signature.SignerCertificate
+    if ($signer.Subject -notmatch '(^|,\s*)O=Microsoft Corporation(\s*,|$)') {
+        return $false
+    }
+    $chain = [System.Security.Cryptography.X509Certificates.X509Chain]::new()
+    try {
+        $chain.ChainPolicy.RevocationMode = [System.Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck
+        [void]$chain.Build($signer)
+        $elements = $chain.ChainElements
+        if ($elements.Count -lt 2) {
+            return $false
+        }
+        $root = $elements[$elements.Count - 1].Certificate
+        return ($root.Subject -match '(^|,\s*)O=Microsoft Corporation(\s*,|$)' -and $root.Subject -match 'CN=Microsoft Root')
+    }
+    finally {
+        $chain.Dispose()
     }
 }
 

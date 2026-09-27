@@ -208,13 +208,15 @@ function Invoke-FileSigning {
         }
     }
 
-    if ($provider.Id -eq 'OfficeVba' -and $ClearOfficeSignatures) {
-        if (-not $OffClearSigPath -or -not [System.IO.File]::Exists($OffClearSigPath)) {
-            return New-SigningResult -Path $LiteralPath -Status 'Failed' -Detail 'offclearsig.exe from the Office SIP package was not found, so existing VBA signatures could not be cleared.'
-        }
+    $clearOffice = $provider.Id -eq 'OfficeVba' -and $ClearOfficeSignatures
+    if ($clearOffice -and (-not $OffClearSigPath -or -not [System.IO.File]::Exists($OffClearSigPath))) {
+        return New-SigningResult -Path $LiteralPath -Status 'Failed' -Detail 'offclearsig.exe from the Office SIP package was not found, so existing VBA signatures could not be cleared.'
+    }
+    # Clearing destroys the existing VBA signatures, so it runs only after every check that can refuse the run.
+    $clearSignatures = {
         $cleared = Clear-OfficeVbaSignature -LiteralPath $LiteralPath -OffClearSigPath $OffClearSigPath -Confirm:$false
         if (-not $cleared.Success) {
-            return New-SigningResult -Path $LiteralPath -Status 'Failed' -Detail "Existing VBA signatures could not be cleared: $($cleared.Message)"
+            New-SigningResult -Path $LiteralPath -Status 'Failed' -Detail "Existing VBA signatures could not be cleared: $($cleared.Message)"
         }
     }
 
@@ -241,6 +243,12 @@ function Invoke-FileSigning {
         }
         if ($TimestampMode -ne 'None') {
             $parameters.TimestampServer = $TimestampServer
+        }
+        if ($clearOffice) {
+            $refusal = & $clearSignatures
+            if ($refusal) {
+                return $refusal
+            }
         }
 
         for ($pass = 1; $pass -le $passes; $pass++) {
@@ -309,15 +317,24 @@ function Invoke-FileSigning {
         }
 
         $total = $plan.Count
-        for ($index = 0; $index -lt $total; $index++) {
-            $pass = $index + 1
-            $passParameters = $plan[$index]
+        $argumentSets = [System.Collections.Generic.List[object]]::new()
+        foreach ($passParameters in $plan) {
             try {
-                $arguments = New-SignToolSignArgument @passParameters
+                $argumentSets.Add([string[]](New-SignToolSignArgument @passParameters))
             }
             catch {
                 return New-SigningResult -Path $LiteralPath -Status 'Failed' -Detail $_.Exception.Message
             }
+        }
+        if ($clearOffice) {
+            $refusal = & $clearSignatures
+            if ($refusal) {
+                return $refusal
+            }
+        }
+        for ($index = 0; $index -lt $total; $index++) {
+            $pass = $index + 1
+            $arguments = $argumentSets[$index]
             $run = Invoke-SignTool -SignToolPath $SignToolPath -ArgumentList $arguments -TimeoutSeconds $TimeoutSeconds
             if ($run.ExitCode -notin 0, 2) {
                 $message = Get-SignToolFailureMessage -Run $run
@@ -418,10 +435,12 @@ function Test-FileSignature {
 
         [string]$SignToolPath,
 
+        [switch]$SkipRevocation,
+
         [int]$TimeoutSeconds = 120
     )
 
-    $state = Get-FileSignatureState -LiteralPath $LiteralPath
+    $state = Get-FileSignatureState -LiteralPath $LiteralPath -CheckRevocation:(-not $SkipRevocation)
     $count = $null
     $timestamps = $null
     if ($SignToolPath -and [System.IO.File]::Exists($SignToolPath) -and $state.State -ne 'NotSigned') {
@@ -435,6 +454,7 @@ function Test-FileSignature {
         'NotSigned' { 'Not signed.' }
         'Valid' { "Valid signature from $($state.Signer)." }
         'Untrusted' { "Signed by $($state.Signer); not trusted on this PC: $($state.Message)" }
+        'Revoked' { "Signed by $($state.Signer); the signing certificate or its issuer has been revoked." }
         'Invalid' { 'The signature is invalid; the file changed after signing.' }
         default { "The signature could not be checked: $($state.Message)" }
     }

@@ -51,14 +51,13 @@ Describe 'Batch signing' {
         $byName['app.msix'].Status | Should -Be 'Failed'
     }
 
-    It 'leaves validly signed files alone with -SkipValid' -Skip:(-not (Find-SignTool)) {
+    It 'signs a file another publisher validly signed, even with -SkipValid' -Skip:(-not (Find-SignTool)) {
         $copy = Join-Path $script:batchRoot 'vendor-signed.exe'
         [System.IO.File]::Copy($script:signTool.Path, $copy, $true)
-        $before = [System.IO.File]::ReadAllBytes($copy)
+        (Get-FileSignatureState -LiteralPath $copy).State | Should -Be 'Valid'
         $results = @(Invoke-SigningBatch -Path $copy -Certificate $script:batchCertificate -Engine PowerShell -SkipValid)
-        $results[0].Status | Should -Be 'Skipped'
-        $results[0].Detail | Should -BeLike 'Already has a valid signature from Microsoft*'
-        [System.IO.File]::ReadAllBytes($copy).Length | Should -Be $before.Length
+        $results[0].Status | Should -Be 'Signed'
+        $results[0].SignerThumbprint | Should -Be $script:batchCertificate.Thumbprint
         [System.IO.File]::Delete($copy)
     }
 

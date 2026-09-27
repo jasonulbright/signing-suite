@@ -155,7 +155,7 @@
           <TextBlock x:Name="EngineInfoText" Grid.Row="4" Grid.Column="1" Grid.ColumnSpan="4" VerticalAlignment="Center" Margin="0,3" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
 
           <CheckBox x:Name="DualSignCheck" Grid.Row="0" Grid.Column="3" Grid.ColumnSpan="2" Margin="0,5" Content="Dual sign executables and cabinets (SHA1 + selected digest)"/>
-          <CheckBox x:Name="SkipValidCheck" Grid.Row="1" Grid.Column="3" Grid.ColumnSpan="2" Margin="0,5" Content="Skip files that already have a valid signature" IsChecked="True"/>
+          <CheckBox x:Name="SkipValidCheck" Grid.Row="1" Grid.Column="3" Grid.ColumnSpan="2" Margin="0,5" Content="Skip files already validly signed by this identity" IsChecked="True"/>
           <CheckBox x:Name="ClearVbaCheck" Grid.Row="2" Grid.Column="3" Grid.ColumnSpan="2" Margin="0,5" Content="Remove existing VBA signatures before signing Office files"/>
           <TextBlock Grid.Row="3" Grid.Column="3" Text="Description" VerticalAlignment="Center" Margin="0,3,8,3"/>
           <DockPanel Grid.Row="3" Grid.Column="4">

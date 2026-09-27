@@ -2,6 +2,7 @@
 $script:TrustResults = @{
     NoSignature = [int]-2146762496
     BadDigest   = [int]-2146869232
+    Revoked     = [int]-2146762484
 }
 
 function Get-FileSignatureState {
@@ -11,17 +12,22 @@ function Get-FileSignatureState {
     .DESCRIPTION
         Uses WinVerifyTrust on the file itself. Get-AuthenticodeSignature reports a matching catalog signature for files
         that Windows catalogs cover, which hides the embedded signature a signing run just wrote.
+        Without -CheckRevocation, revocation is not checked and nothing is retrieved from the network, so Valid means
+        the chain and digest are good as of the local cache. -CheckRevocation checks the chain below the root online.
     .OUTPUTS
-        Object with State (NotSigned, Valid, Untrusted, Invalid, Unknown), StatusCode, Signer, Thumbprint, Timestamped, Message.
+        Object with State (NotSigned, Valid, Untrusted, Revoked, Invalid, Unknown), StatusCode, Signer, Thumbprint,
+        Timestamped, Message.
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
-        [string]$LiteralPath
+        [string]$LiteralPath,
+
+        [switch]$CheckRevocation
     )
 
     try {
-        $result = [SigningSuite.Native.Trust]::VerifyEmbedded($LiteralPath)
+        $result = [SigningSuite.Native.Trust]::VerifyEmbedded($LiteralPath, [bool]$CheckRevocation)
     }
     catch {
         return [pscustomobject]@{
@@ -40,6 +46,9 @@ function Get-FileSignatureState {
     }
     elseif ($code -eq $script:TrustResults.BadDigest) {
         'Invalid'
+    }
+    elseif ($code -eq $script:TrustResults.Revoked) {
+        'Revoked'
     }
     elseif ($code -eq $script:TrustResults.NoSignature -and -not $result.Signer) {
         'NotSigned'

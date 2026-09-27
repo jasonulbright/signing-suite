@@ -75,6 +75,16 @@ function Invoke-SigningBatch {
         throw 'A timestamp needs a server URL that starts with http:// or https://.'
     }
 
+    $expectedThumbprint = $null
+    if ($Source -eq 'Store') {
+        $expectedThumbprint = $Certificate.Thumbprint
+    }
+    elseif ($CertificateFile -and [System.IO.File]::Exists($CertificateFile)) {
+        $fileCertificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($CertificateFile)
+        $expectedThumbprint = $fileCertificate.Thumbprint
+        $fileCertificate.Dispose()
+    }
+
     $signToolAvailable = [bool]$SignToolPath -and [System.IO.File]::Exists($SignToolPath)
     $offClearSig = $null
     if ($ClearOfficeSignatures) {
@@ -110,7 +120,7 @@ function Invoke-SigningBatch {
             [pscustomobject]$result
             continue
         }
-        if ($SkipValid -and (Test-SkipValidSignature -SignatureState $info.SignatureState -Timestamped ([bool]$info.Timestamped) -TimestampMode $TimestampMode)) {
+        if ($SkipValid -and (Test-SkipValidSignature -SignatureState $info.SignatureState -Timestamped ([bool]$info.Timestamped) -TimestampMode $TimestampMode -SignerThumbprint $info.SignerThumbprint -ExpectedThumbprint $expectedThumbprint)) {
             $result.Status = 'Skipped'
             $result.Detail = "Already has a valid signature from $($info.Signer)."
             [pscustomobject]$result
