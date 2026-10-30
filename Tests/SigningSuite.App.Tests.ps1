@@ -227,10 +227,14 @@ public static string[] Split(string commandLine)
         [regex]::Match($match.Groups[1].Value, '<Button x:Name="OkButton"[^>]*>').Value | Should -Not -Match 'IsDefault'
     }
 
-    It 'keeps tests, native test sources and release tooling out of the release archive' {
+    It 'keeps the source archive full and leaves the dev files out of the release builds explicitly' {
         $attributes = [System.IO.File]::ReadAllText((Join-Path $script:repoRoot '.gitattributes'))
-        foreach ($pattern in '/Tests', '/tools', '/RELEASING.md', '/.gitattributes', '/.gitignore') {
-            $attributes | Should -Match ([regex]::Escape($pattern) + '\s+export-ignore')
+        $attributes | Should -Not -Match 'export-ignore'
+        foreach ($builder in 'Build-Release.ps1', 'Build-Installer.ps1') {
+            $text = [System.IO.File]::ReadAllText((Join-Path $script:repoRoot "tools\$builder"))
+            foreach ($path in 'Tests', 'tools', '.github', 'installer', 'screenshots', 'RELEASING.md', 'ROADMAP.md', '.gitattributes', '.gitignore') {
+                $text | Should -Match ([regex]::Escape("':(exclude)$path'"))
+            }
         }
     }
 }

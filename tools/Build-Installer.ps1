@@ -4,8 +4,8 @@
     Builds SigningSuiteSetup-<version>.exe with Inno Setup from a git ref and adds it to checksums.txt.
 
 .DESCRIPTION
-    The installer payload is the same file set as the portable zip: `git archive` of the ref, so export-ignore paths stay
-    out. Every prerequisite download named in installer\SigningSuite.iss is fetched and checked against its pinned SHA256
+    The installer payload is the same file set as the portable zip: `git archive` of the ref minus the
+    development paths that Build-Release.ps1 also leaves out. Every prerequisite download named in installer\SigningSuite.iss is fetched and checked against its pinned SHA256
     and its Microsoft signature before compiling, so a stale pin fails the build instead of a user's installation.
 
 .PARAMETER Version
@@ -136,7 +136,19 @@ $stage = Join-Path $work 'stage'
 try {
     [void][System.IO.Directory]::CreateDirectory($stage)
     $archive = Join-Path $work 'payload.zip'
-    & git -C $repoRoot archive --format=zip -o $archive $Ref
+    # Keep this list identical to the one in Build-Release.ps1.
+    $excludePaths = @(
+        ':(exclude)Tests'
+        ':(exclude)tools'
+        ':(exclude).github'
+        ':(exclude)installer'
+        ':(exclude)screenshots'
+        ':(exclude)RELEASING.md'
+        ':(exclude)ROADMAP.md'
+        ':(exclude).gitattributes'
+        ':(exclude).gitignore'
+    )
+    & git -C $repoRoot archive --format=zip -o $archive $Ref -- . $excludePaths
     if ($LASTEXITCODE -ne 0) {
         throw "git archive failed with exit code $LASTEXITCODE."
     }
