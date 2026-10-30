@@ -4,8 +4,9 @@
     Builds the release zip and checksums.txt from a release tag.
 
 .DESCRIPTION
-    The zip comes from `git archive` of the tag, so only committed files ship and every path marked export-ignore in
-    .gitattributes (tests, native test sources, release tooling) stays out. The build refuses a tag that does not match
+    The zip comes from `git archive` of the tag, so only committed files ship. The build excludes the development paths
+    (tests, native test sources, release tooling, installer sources, screenshots, maintainer notes) explicitly, because
+    the source archive GitHub builds for the tag keeps every tracked file. The build refuses a tag that does not match
     the version in the module manifest, and checks the zip for excluded paths before writing checksums.
 
 .PARAMETER Version
@@ -48,7 +49,19 @@ $zipPath = Join-Path $OutputDirectory $zipName
 if ([System.IO.File]::Exists($zipPath)) {
     [System.IO.File]::Delete($zipPath)
 }
-& git -C $repoRoot archive --format=zip -o $zipPath $tag
+# Keep this list identical to the one in Build-Installer.ps1.
+$excludePaths = @(
+    ':(exclude)Tests'
+    ':(exclude)tools'
+    ':(exclude).github'
+    ':(exclude)installer'
+    ':(exclude)screenshots'
+    ':(exclude)RELEASING.md'
+    ':(exclude)ROADMAP.md'
+    ':(exclude).gitattributes'
+    ':(exclude).gitignore'
+)
+& git -C $repoRoot archive --format=zip -o $zipPath $tag -- . $excludePaths
 if ($LASTEXITCODE -ne 0) {
     throw "git archive failed with exit code $LASTEXITCODE."
 }
