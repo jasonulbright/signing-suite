@@ -100,7 +100,7 @@ powershell.exe -NoProfile -STA -File .\start-signingsuite.ps1 'C:\Build\Output' 
 | Option | Effect |
 |---|---|
 | File digest | SHA256, SHA384 or SHA512. |
-| Timestamp | RFC 3161 (SignTool), Authenticode legacy, or None. The server defaults to `http://timestamp.digicert.com`. |
+| Timestamp | RFC 3161 (SignTool), Authenticode legacy, or None. The server defaults to `http://timestamp.digicert.com`. When the server cannot be reached or refuses the request, the file is signed again up to 3 more times, 3 seconds apart. An Office file is signed again only when `offclearsig.exe` from the Office SIP package is installed, and only when the file had no VBA signature before the run or **Remove existing VBA signatures before signing Office files** is selected. The command line sets these with `-TimestampRetryCount` and `-TimestampRetryDelaySeconds`. |
 | Dual sign | Executables and cabinets get a SHA1 signature with an Authenticode timestamp, then the selected digest appended. Other formats hold one signature and are signed once. |
 | Skip files already validly signed by this identity | Leaves a file alone only when its valid signature comes from the selected certificate. A file validly signed by another publisher is signed again, because clients trust only the publishers in their Trusted Publishers store. Artifact Signing issues a certificate per run, so with that identity any valid signature is skipped and the confirmation dialog names the signers. |
 | Remove existing VBA signatures | Runs `offclearsig.exe` from the Office SIP folder before signing Office files. The confirmation dialog names the affected files. |

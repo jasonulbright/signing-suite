@@ -452,6 +452,12 @@ public static string[] Split(string commandLine)
         $messages.Errors | Should -Be @('A certificate chain processed, but terminated in a root certificate which is not trusted by the trust provider.', 'An error occurred while attempting to sign: C:\x.ps1')
         $messages.Warnings | Should -Be @('Signing succeeded, but an error occurred.')
     }
+
+    It 'joins the timestamp server error that continues on a line with no indent' {
+        $text = "SignTool Error: The specified timestamp server either could not be reached or`r`nreturned an invalid response.`r`nSignTool Error: An error occurred while attempting to sign: C:\x.dll`r`n`r`nNumber of errors: 1`r`n"
+        $messages = ConvertFrom-SignToolOutput -Text $text
+        $messages.Errors | Should -Be @('The specified timestamp server either could not be reached or returned an invalid response.', 'An error occurred while attempting to sign: C:\x.dll')
+    }
 }
 
 Describe 'CSV export values' {
@@ -692,9 +698,165 @@ Describe 'Signing with the PowerShell engine' {
     It 'fails a file signed without the timestamp that was asked for' {
         $path = Join-Path $script:psRoot 'no-timestamp.ps1'
         [System.IO.File]::WriteAllText($path, "Write-Output 1`r`n")
-        $result = Invoke-FileSigning -LiteralPath $path -Engine PowerShell -Certificate $script:certificate -TimestampMode Authenticode -TimestampServer 'http://127.0.0.1:9/'
+        $result = Invoke-FileSigning -LiteralPath $path -Engine PowerShell -Certificate $script:certificate -TimestampMode Authenticode -TimestampServer 'http://127.0.0.1:9/' -TimestampRetryCount 2 -TimestampRetryDelaySeconds 0
         $result.Status | Should -Be 'Failed'
-        $result.Detail | Should -BeLike 'The file was signed without the requested timestamp*'
+        $result.Detail | Should -BeLike 'The file was signed without the requested timestamp*after 3 attempts*'
+    }
+
+    It 'signs again when the first attempt has no timestamp' {
+        $path = Join-Path $script:psRoot 'retry-timestamp.ps1'
+        [System.IO.File]::WriteAllText($path, "Write-Output 1`r`n")
+        $stateCalls = @{ Count = 0 }
+        $thumbprint = $script:certificate.Thumbprint
+        $signer = $script:certificate
+        Mock -ModuleName SigningSuite Set-AuthenticodeSignature {
+            [pscustomobject]@{ SignerCertificate = $signer; Status = 'Valid'; StatusMessage = '' }
+        }.GetNewClosure()
+        Mock -ModuleName SigningSuite Get-FileSignatureState {
+            $stateCalls.Count++
+            [pscustomobject]@{ State = 'Untrusted'; Message = 'self-signed'; Signer = 'CN=Test'; Thumbprint = $thumbprint; Timestamped = ($stateCalls.Count -ge 2) }
+        }.GetNewClosure()
+        $result = Invoke-FileSigning -LiteralPath $path -Engine PowerShell -Certificate $script:certificate -TimestampMode Authenticode -TimestampServer 'http://127.0.0.1:9/' -TimestampRetryDelaySeconds 0
+        $result.Status | Should -Be 'Signed'
+        $result.Detail | Should -BeLike '*Timestamped on attempt 2 of 4.*'
+        Should -Invoke -ModuleName SigningSuite Get-FileSignatureState -Times 2 -Exactly
+        Should -Invoke -ModuleName SigningSuite Set-AuthenticodeSignature -Times 2 -Exactly
+    }
+
+    It 'signs once when no timestamp is asked for' {
+        $path = Join-Path $script:psRoot 'no-retry.ps1'
+        [System.IO.File]::WriteAllText($path, "Write-Output 1`r`n")
+        Mock -ModuleName SigningSuite Start-Sleep { }
+        $result = Invoke-FileSigning -LiteralPath $path -Engine PowerShell -Certificate $script:certificate -TimestampMode None
+        $result.Status | Should -Be 'Signed'
+        Should -Invoke -ModuleName SigningSuite Start-Sleep -Times 0 -Exactly
+    }
+
+    It 'retries a signtool timestamp server error and not other signtool errors: <Case>' -ForEach @(
+        @{ Case = 'timestamp server'; ErrorLine = 'SignTool Error: The specified timestamp server either could not be reached or returned an invalid response.'; Calls = 2; Status = 'Signed' }
+        @{ Case = 'other error'; ErrorLine = 'SignTool Error: No certificates were found that met all the given criteria.'; Calls = 1; Status = 'Failed' }
+    ) {
+        $path = Join-Path $script:psRoot "signtool-retry-$($Case -replace ' ', '-').ps1"
+        [System.IO.File]::WriteAllText($path, "Write-Output 1`r`n")
+        $tool = Join-Path $script:psRoot 'signtool-stub.exe'
+        [System.IO.File]::WriteAllText($tool, 'stub')
+        $signToolCalls = @{ Count = 0 }
+        $errorText = $ErrorLine
+        $thumbprint = $script:certificate.Thumbprint
+        Mock -ModuleName SigningSuite Invoke-SignTool {
+            $signToolCalls.Count++
+            if ($signToolCalls.Count -eq 1) {
+                return [pscustomobject]@{ ExitCode = 1; TimedOut = $false; Output = ''; Error = $errorText; Errors = @($errorText -replace '^SignTool Error:\s*', ''); Warnings = @() }
+            }
+            [pscustomobject]@{ ExitCode = 0; TimedOut = $false; Output = 'Successfully signed'; Error = ''; Errors = @(); Warnings = @() }
+        }.GetNewClosure()
+        Mock -ModuleName SigningSuite Get-FileSignatureState {
+            [pscustomobject]@{ State = 'Untrusted'; Message = 'self-signed'; Signer = 'CN=Test'; Thumbprint = $thumbprint; Timestamped = $true }
+        }.GetNewClosure()
+        $result = Invoke-FileSigning -LiteralPath $path -Engine SignTool -SignToolPath $tool -Certificate $script:certificate -TimestampMode Rfc3161 -TimestampServer 'http://timestamp.example.test' -TimestampRetryDelaySeconds 0
+        $result.Status | Should -Be $Status
+        Should -Invoke -ModuleName SigningSuite Invoke-SignTool -Times $Calls -Exactly
+    }
+
+    It 'names the attempt count when every attempt hits a signtool timestamp server error' {
+        $path = Join-Path $script:psRoot 'signtool-retry-exhausted.ps1'
+        [System.IO.File]::WriteAllText($path, "Write-Output 1`r`n")
+        $tool = Join-Path $script:psRoot 'signtool-stub.exe'
+        [System.IO.File]::WriteAllText($tool, 'stub')
+        Mock -ModuleName SigningSuite Invoke-SignTool {
+            $text = 'SignTool Error: The specified timestamp server either could not be reached or returned an invalid response.'
+            [pscustomobject]@{ ExitCode = 1; TimedOut = $false; Output = ''; Error = $text; Errors = @($text -replace '^SignTool Error:\s*', ''); Warnings = @() }
+        }
+        $result = Invoke-FileSigning -LiteralPath $path -Engine SignTool -SignToolPath $tool -Certificate $script:certificate -TimestampMode Rfc3161 -TimestampServer 'http://timestamp.example.test' -TimestampRetryCount 1 -TimestampRetryDelaySeconds 0
+        $result.Status | Should -Be 'Failed'
+        $result.Detail | Should -BeLike '*timestamp server*Failed after 2 attempts.'
+        Should -Invoke -ModuleName SigningSuite Invoke-SignTool -Times 2 -Exactly
+    }
+
+    It 'retries an Office file only when its VBA signatures can be cleared first: <Case>' -ForEach @(
+        @{ Case = 'unsigned before the run'; Before = 'NotSigned'; Clear = $false; Discover = $false; Order = 'sign clear sign sign sign'; Status = 'Signed' }
+        @{ Case = 'unsigned, clearing tool found by the module'; Before = 'NotSigned'; Clear = $false; Discover = $true; Order = 'sign clear sign sign sign'; Status = 'Signed' }
+        @{ Case = 'signed before, clearing asked for'; Before = 'Valid'; Clear = $true; Discover = $false; Order = 'clear sign clear sign sign sign'; Status = 'Signed' }
+        @{ Case = 'signed before, no clearing'; Before = 'Valid'; Clear = $false; Discover = $false; Order = 'sign'; Status = 'Failed' }
+    ) {
+        $workbook = Join-Path $script:psRoot "retry-$($Case -replace '[ ,]+', '-').xlsm"
+        New-TestZip -Path $workbook -Entries @{ '[Content_Types].xml' = '<Types/>'; 'xl/vbaProject.bin' = 'x' }
+        $tool = Join-Path $script:psRoot 'signtool-stub.exe'
+        [System.IO.File]::WriteAllText($tool, 'stub')
+        $clearer = Join-Path $script:psRoot 'offclearsig-stub.exe'
+        [System.IO.File]::WriteAllText($clearer, 'stub')
+        $counter = @{ SignTool = 0 }
+        $events = [System.Collections.Generic.List[string]]::new()
+        $before = $Before
+        $thumbprint = $script:certificate.Thumbprint
+        Mock -ModuleName SigningSuite Get-SipSubject { [pscustomobject]@{ Supported = $true; Guid = [guid]::Empty; Name = 'Office'; ErrorCode = 0 } }
+        Mock -ModuleName SigningSuite Clear-OfficeVbaSignature { $events.Add('clear'); [pscustomobject]@{ Success = $true; Message = '' } }.GetNewClosure()
+        Mock -ModuleName SigningSuite Get-OfficeSipStatus { [pscustomobject]@{ Is64Bit = [Environment]::Is64BitProcess; OffClearSigPath = $clearer } }.GetNewClosure()
+        Mock -ModuleName SigningSuite Invoke-SignTool {
+            $counter.SignTool++
+            $events.Add('sign')
+            if ($counter.SignTool -eq 1) {
+                $text = 'SignTool Error: The specified timestamp server either could not be reached or returned an invalid response.'
+                return [pscustomobject]@{ ExitCode = 1; TimedOut = $false; Output = ''; Error = $text; Errors = @($text); Warnings = @() }
+            }
+            [pscustomobject]@{ ExitCode = 0; TimedOut = $false; Output = ''; Error = ''; Errors = @(); Warnings = @() }
+        }.GetNewClosure()
+        Mock -ModuleName SigningSuite Get-FileSignatureState {
+            if ($counter.SignTool -eq 0) {
+                return [pscustomobject]@{ State = $before; Message = ''; Signer = $null; Thumbprint = $null; Timestamped = $false }
+            }
+            [pscustomobject]@{ State = 'Untrusted'; Message = 'self-signed'; Signer = 'CN=Test'; Thumbprint = $thumbprint; Timestamped = $true }
+        }.GetNewClosure()
+        $parameters = @{
+            LiteralPath                = $workbook
+            Engine                     = 'SignTool'
+            SignToolPath               = $tool
+            Certificate                = $script:certificate
+            TimestampMode              = 'Rfc3161'
+            TimestampServer            = 'http://timestamp.example.test'
+            TimestampRetryDelaySeconds = 0
+            ClearOfficeSignatures      = $Clear
+        }
+        if (-not $Discover) {
+            $parameters.OffClearSigPath = $clearer
+        }
+        $result = Invoke-FileSigning @parameters
+        $result.Status | Should -Be $Status
+        ($events -join ' ') | Should -Be $Order
+    }
+
+    It 'treats a timestamp warning on a signed pass as a missing timestamp: <Case>' -ForEach @(
+        @{ Case = 'retry available'; Retries = 1; Calls = 4; Status = 'Signed' }
+        @{ Case = 'no retry left'; Retries = 0; Calls = 2; Status = 'Failed' }
+    ) {
+        $path = Join-Path $script:psRoot "dual-warning-$Retries.dll"
+        New-TestPortableExecutable -Path $path
+        $tool = Join-Path $script:psRoot 'signtool-stub.exe'
+        [System.IO.File]::WriteAllText($tool, 'stub')
+        $counter = @{ SignTool = 0 }
+        $thumbprint = $script:certificate.Thumbprint
+        Mock -ModuleName SigningSuite Invoke-SignTool {
+            $counter.SignTool++
+            if ($counter.SignTool -eq 2) {
+                return [pscustomobject]@{ ExitCode = 2; TimedOut = $false; Output = ''; Error = ''; Errors = @(); Warnings = @('Signing succeeded, but an error occurred while attempting to timestamp: dual.dll') }
+            }
+            [pscustomobject]@{ ExitCode = 0; TimedOut = $false; Output = ''; Error = ''; Errors = @(); Warnings = @() }
+        }.GetNewClosure()
+        Mock -ModuleName SigningSuite Get-FileSignatureState {
+            [pscustomobject]@{ State = 'Untrusted'; Message = 'self-signed'; Signer = 'CN=Test'; Thumbprint = $thumbprint; Timestamped = $true }
+        }.GetNewClosure()
+        $result = Invoke-FileSigning -LiteralPath $path -Engine SignTool -SignToolPath $tool -Certificate $script:certificate -DualSign -TimestampMode Rfc3161 -TimestampServer 'http://timestamp.example.test' -TimestampRetryCount $Retries -TimestampRetryDelaySeconds 0
+        $result.Status | Should -Be $Status
+        Should -Invoke -ModuleName SigningSuite Invoke-SignTool -Times $Calls -Exactly
+    }
+
+    It 'recognizes timestamp failures in signing output: <Text>' -ForEach @(
+        @{ Text = 'SignTool Error: The specified timestamp server either could not be reached or returned an invalid response.'; Expected = $true }
+        @{ Text = 'SignTool Warning: Signing succeeded, but an error occurred while attempting to timestamp: a.exe'; Expected = $true }
+        @{ Text = 'SignTool Error: No certificates were found that met all the given criteria.'; Expected = $false }
+        @{ Text = ''; Expected = $false }
+    ) {
+        InModuleScope SigningSuite -Parameters @{ Text = $Text } { param($Text) Test-TimestampFailureText -Text $Text } | Should -Be $Expected
     }
 
     It 'reports a missing file and a timestamp request without a server' {

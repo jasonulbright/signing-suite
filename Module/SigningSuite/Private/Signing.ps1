@@ -140,6 +140,12 @@ function Invoke-FileSigning {
 
         [string]$TimestampServer,
 
+        [ValidateRange(0, 10)]
+        [int]$TimestampRetryCount = 3,
+
+        [ValidateRange(0, 60)]
+        [int]$TimestampRetryDelaySeconds = 3,
+
         [switch]$DualSign,
 
         [switch]$ClearOfficeSignatures,
@@ -250,26 +256,7 @@ function Invoke-FileSigning {
                 return $refusal
             }
         }
-
-        for ($pass = 1; $pass -le $passes; $pass++) {
-            try {
-                $signature = Set-AuthenticodeSignature @parameters
-            }
-            catch {
-                return New-SigningResult -Path $LiteralPath -Status 'Failed' -Passes $completed -Detail (Format-PassFailure -Pass $pass -Passes $passes -Completed $completed -Message $_.Exception.Message)
-            }
-            if (-not $signature.SignerCertificate -or $signature.SignerCertificate.Thumbprint -ne $Certificate.Thumbprint) {
-                if ($provider.Id -eq 'OfficeVba' -and $pass -eq 1 -and $signature.StatusMessage -match '800403f3') {
-                    return New-SigningResult -Path $LiteralPath -Status 'Skipped' -Detail 'No VBA project.'
-                }
-                # For a file a Windows catalog covers, the returned signature is the catalog's, not the one just embedded.
-                $embedded = Get-FileSignatureState -LiteralPath $LiteralPath
-                if ($embedded.Thumbprint -ne $Certificate.Thumbprint) {
-                    return New-SigningResult -Path $LiteralPath -Status 'Failed' -Passes $completed -Detail (Format-PassFailure -Pass $pass -Passes $passes -Completed $completed -Message "$($signature.Status): $($signature.StatusMessage)")
-                }
-            }
-            $completed = $pass
-        }
+        $total = $passes
     }
     else {
         if (-not $SignToolPath -or -not [System.IO.File]::Exists($SignToolPath)) {
@@ -332,27 +319,113 @@ function Invoke-FileSigning {
                 return $refusal
             }
         }
+    }
+
+    # An attempt runs every pass again from the first. For other formats the first pass replaces all signatures, so a
+    # retry never stacks an extra appended signature. The Office SIPs add to the VBA signatures already in the file
+    # (a file that holds them gets only a new V3 signature), so an Office retry clears them first. That is safe only
+    # when the file held no VBA signature before this run, or when the run cleared them already.
+    $attempts = if ($TimestampMode -ne 'None') { $TimestampRetryCount + 1 } else { 1 }
+    $officeRetry = $provider.Id -eq 'OfficeVba'
+    if ($officeRetry -and $attempts -gt 1) {
+        if (-not $OffClearSigPath) {
+            $sip = Get-OfficeSipStatus | Where-Object { $_.Is64Bit -eq [Environment]::Is64BitProcess } | Select-Object -First 1
+            if ($sip) {
+                $OffClearSigPath = $sip.OffClearSigPath
+            }
+        }
+        $canClear = $OffClearSigPath -and [System.IO.File]::Exists($OffClearSigPath)
+        if (-not $canClear -or (-not $clearOffice -and (Get-FileSignatureState -LiteralPath $LiteralPath).State -ne 'NotSigned')) {
+            $attempts = 1
+        }
+    }
+    for ($attempt = 1; $attempt -le $attempts; $attempt++) {
+        if ($attempt -gt 1) {
+            Start-Sleep -Seconds $TimestampRetryDelaySeconds
+            if ($officeRetry) {
+                $refusal = & $clearSignatures
+                if ($refusal) {
+                    return $refusal
+                }
+            }
+        }
+        $completed = 0
+        $warnings = [System.Collections.Generic.List[string]]::new()
+        $retry = $false
         for ($index = 0; $index -lt $total; $index++) {
             $pass = $index + 1
-            $arguments = $argumentSets[$index]
-            $run = Invoke-SignTool -SignToolPath $SignToolPath -ArgumentList $arguments -TimeoutSeconds $TimeoutSeconds
-            if ($run.ExitCode -notin 0, 2) {
-                $message = Get-SignToolFailureMessage -Run $run
-                if ($provider.Id -eq 'OfficeVba' -and $pass -eq 1 -and ($run.Output + $run.Error) -match '800403f3') {
-                    return New-SigningResult -Path $LiteralPath -Status 'Skipped' -Detail 'No VBA project.'
+            $failure = $null
+            $failureText = $null
+            if ($Engine -eq 'PowerShell') {
+                try {
+                    $signature = Set-AuthenticodeSignature @parameters
                 }
-                return New-SigningResult -Path $LiteralPath -Status 'Failed' -Passes $completed -Detail (Format-PassFailure -Pass $pass -Passes $total -Completed $completed -Message $message)
+                catch {
+                    $failure = $_.Exception.Message
+                    $failureText = $failure
+                }
+                if (-not $failure -and (-not $signature.SignerCertificate -or $signature.SignerCertificate.Thumbprint -ne $Certificate.Thumbprint)) {
+                    if ($provider.Id -eq 'OfficeVba' -and $pass -eq 1 -and $signature.StatusMessage -match '800403f3') {
+                        return New-SigningResult -Path $LiteralPath -Status 'Skipped' -Detail 'No VBA project.'
+                    }
+                    # For a file a Windows catalog covers, the returned signature is the catalog's, not the one just embedded.
+                    $embedded = Get-FileSignatureState -LiteralPath $LiteralPath
+                    if ($embedded.Thumbprint -ne $Certificate.Thumbprint) {
+                        $failure = "$($signature.Status): $($signature.StatusMessage)"
+                        $failureText = $failure
+                    }
+                }
             }
-            foreach ($warning in $run.Warnings) {
-                if (-not $notes.Contains($warning)) {
-                    $notes.Add($warning)
+            else {
+                $run = Invoke-SignTool -SignToolPath $SignToolPath -ArgumentList $argumentSets[$index] -TimeoutSeconds $TimeoutSeconds
+                if ($run.ExitCode -notin 0, 2) {
+                    if ($provider.Id -eq 'OfficeVba' -and $pass -eq 1 -and ($run.Output + $run.Error) -match '800403f3') {
+                        return New-SigningResult -Path $LiteralPath -Status 'Skipped' -Detail 'No VBA project.'
+                    }
+                    $failure = Get-SignToolFailureMessage -Run $run
+                    $failureText = $run.Output + "`n" + $run.Error
                 }
+                else {
+                    foreach ($warning in $run.Warnings) {
+                        if (-not $warnings.Contains($warning)) {
+                            $warnings.Add($warning)
+                        }
+                    }
+                }
+            }
+            if ($failure) {
+                $timestampFailure = Test-TimestampFailureText -Text $failureText
+                if ($attempt -lt $attempts -and $timestampFailure) {
+                    $retry = $true
+                    break
+                }
+                if ($attempts -gt 1 -and $timestampFailure) {
+                    $failure = "$($failure.TrimEnd()) Failed after $attempts attempts."
+                }
+                return New-SigningResult -Path $LiteralPath -Status 'Failed' -Passes $completed -Detail (Format-PassFailure -Pass $pass -Passes $total -Completed $completed -Message $failure)
             }
             $completed = $pass
         }
+        if ($retry) {
+            continue
+        }
+
+        $state = Get-FileSignatureState -LiteralPath $LiteralPath
+        # The state shows one signature only. A timestamp warning from any pass also means a signature has no timestamp,
+        # for example the appended signature of a dual-signed file.
+        $timestampMissing = -not $state.Timestamped -or @($warnings | Where-Object { Test-TimestampFailureText -Text $_ }).Count -gt 0
+        $signedAsExpected = $state.State -notin 'NotSigned', 'Invalid', 'Unknown' -and (-not $expectedThumbprint -or $state.Thumbprint -eq $expectedThumbprint)
+        if ($TimestampMode -ne 'None' -and $timestampMissing -and $signedAsExpected -and $attempt -lt $attempts) {
+            continue
+        }
+        break
+    }
+    foreach ($warning in $warnings) {
+        if (-not $notes.Contains($warning)) {
+            $notes.Add($warning)
+        }
     }
 
-    $state = Get-FileSignatureState -LiteralPath $LiteralPath
     if ($state.State -in 'NotSigned', 'Invalid', 'Unknown') {
         return New-SigningResult -Path $LiteralPath -Status 'Failed' -Passes $completed -Signature $state -Detail "Signing reported success but the file is $($state.State): $($state.Message)"
     }
@@ -360,12 +433,32 @@ function Invoke-FileSigning {
         return New-SigningResult -Path $LiteralPath -Status 'Failed' -Passes $completed -Signature $state -Detail "The file carries a signature from $($state.Signer), not the selected certificate."
     }
 
-    if ($TimestampMode -ne 'None' -and -not $state.Timestamped) {
-        return New-SigningResult -Path $LiteralPath -Status 'Failed' -Passes $completed -Signature $state -Detail "The file was signed without the requested timestamp; $TimestampServer could not be reached or refused the request. Sign again when the server is reachable, or choose no timestamp."
+    if ($TimestampMode -ne 'None' -and $timestampMissing) {
+        $tries = if ($attempts -gt 1) { " after $attempts attempts" } else { '' }
+        return New-SigningResult -Path $LiteralPath -Status 'Failed' -Passes $completed -Signature $state -Detail "The file was signed without the requested timestamp; $TimestampServer could not be reached or refused the request$tries. Sign again when the server is reachable, or choose no timestamp."
     }
     $summary = if ($state.State -eq 'Valid') { 'Signed and verified.' } else { "Signed; not trusted on this PC: $($state.Message)" }
     $notes.Insert(0, $summary)
+    if ($attempt -gt 1) {
+        $notes.Insert(1, "Timestamped on attempt $attempt of $attempts.")
+    }
     New-SigningResult -Path $LiteralPath -Status 'Signed' -Passes $completed -Signature $state -Detail ($notes -join ' ')
+}
+
+function Test-TimestampFailureText {
+    <#
+    .SYNOPSIS
+        True when signing output says the timestamp server could not be reached or refused the request.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [AllowEmptyString()]
+        [AllowNull()]
+        [string]$Text
+    )
+
+    [bool]($Text -match '(?i)timestamp server|attempting to timestamp|time-stamp server')
 }
 
 function Format-PassFailure {

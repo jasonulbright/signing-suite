@@ -27,6 +27,12 @@
 .PARAMETER CertificateFile
     Public certificate (.cer) for a digest signing library that does not supply one.
 
+.PARAMETER TimestampRetryCount
+    Number of times to sign a file again when the timestamp server cannot be reached or refuses the request. Default 3.
+
+.PARAMETER TimestampRetryDelaySeconds
+    Seconds to wait before each new attempt. Default 3.
+
 .PARAMETER Verify
     Checks signatures instead of signing.
 
@@ -86,6 +92,12 @@ param(
 
     [string]$TimestampServer,
 
+    [ValidateRange(0, 10)]
+    [int]$TimestampRetryCount = 3,
+
+    [ValidateRange(0, 60)]
+    [int]$TimestampRetryDelaySeconds = 3,
+
     [switch]$DualSign,
 
     [switch]$SkipValid,
@@ -125,7 +137,7 @@ $toolPath = if ($tool) { $tool.Path } else { '' }
 
 if ($Verify -or $RemoveSignature) {
     $mode = if ($Verify) { '-Verify' } else { '-RemoveSignature' }
-    $signingOnly = @('Engine', 'DigestAlgorithm', 'TimestampMode', 'TimestampServer', 'DualSign', 'SkipValid', 'ClearOfficeSignatures', 'Description', 'DescriptionUrl')
+    $signingOnly = @('Engine', 'DigestAlgorithm', 'TimestampMode', 'TimestampServer', 'TimestampRetryCount', 'TimestampRetryDelaySeconds', 'DualSign', 'SkipValid', 'ClearOfficeSignatures', 'Description', 'DescriptionUrl')
     $ignored = @($PSBoundParameters.Keys | Where-Object { $signingOnly -contains $_ })
     if ($ignored.Count -gt 0) {
         Write-Error "These options apply to signing, not to ${mode}: -$($ignored -join ', -')" -ErrorAction Continue
@@ -170,17 +182,19 @@ if ($Verify) {
 }
 
 $batch = @{
-    Path                  = $Path
-    Engine                = $Engine
-    SignToolPath          = $toolPath
-    DigestAlgorithm       = $DigestAlgorithm
-    TimestampMode         = $TimestampMode
-    TimestampServer       = $TimestampServer
-    DualSign              = $DualSign
-    SkipValid             = $SkipValid
-    ClearOfficeSignatures = $ClearOfficeSignatures
-    Description           = $Description
-    DescriptionUrl        = $DescriptionUrl
+    Path                       = $Path
+    Engine                     = $Engine
+    SignToolPath               = $toolPath
+    DigestAlgorithm            = $DigestAlgorithm
+    TimestampMode              = $TimestampMode
+    TimestampServer            = $TimestampServer
+    TimestampRetryCount        = $TimestampRetryCount
+    TimestampRetryDelaySeconds = $TimestampRetryDelaySeconds
+    DualSign                   = $DualSign
+    SkipValid                  = $SkipValid
+    ClearOfficeSignatures      = $ClearOfficeSignatures
+    Description                = $Description
+    DescriptionUrl             = $DescriptionUrl
 }
 $batch += $shouldProcess
 
