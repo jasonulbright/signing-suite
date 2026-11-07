@@ -15,8 +15,8 @@ function Get-FileSignatureState {
         Without -CheckRevocation, revocation is not checked and nothing is retrieved from the network, so Valid means
         the chain and digest are good as of the local cache. -CheckRevocation checks the chain below the root online.
     .OUTPUTS
-        Object with State (NotSigned, Valid, Untrusted, Revoked, Invalid, Unknown), StatusCode, Signer, Thumbprint,
-        Timestamped, Message.
+        Object with State (NotSigned, Valid, Untrusted, Revoked, Invalid, Unknown, NotChecked), StatusCode, Signer,
+        Thumbprint, Timestamped, Message. NotChecked is an Access database, whose VBA signature the app cannot read.
     #>
     [CmdletBinding()]
     param(
@@ -25,6 +25,17 @@ function Get-FileSignatureState {
 
         [switch]$CheckRevocation
     )
+
+    if ($script:AccessExtensions -contains [System.IO.Path]::GetExtension($LiteralPath).ToLowerInvariant()) {
+        return [pscustomobject]@{
+            State       = 'NotChecked'
+            StatusCode  = $null
+            Signer      = $null
+            Thumbprint  = $null
+            Timestamped = $false
+            Message     = $script:AccessNotCheckedMessage
+        }
+    }
 
     try {
         $result = [SigningSuite.Native.Trust]::VerifyEmbedded($LiteralPath, [bool]$CheckRevocation)

@@ -30,6 +30,8 @@ function Invoke-SigningBatch {
 
         [string]$SignToolPath,
 
+        [string]$AccessPath,
+
         [ValidateSet('SHA256', 'SHA384', 'SHA512')]
         [string]$DigestAlgorithm = 'SHA256',
 
@@ -37,6 +39,12 @@ function Invoke-SigningBatch {
         [string]$TimestampMode = 'None',
 
         [string]$TimestampServer,
+
+        [ValidateRange(0, 10)]
+        [int]$TimestampRetryCount = 3,
+
+        [ValidateRange(0, 60)]
+        [int]$TimestampRetryDelaySeconds = 3,
 
         [switch]$DualSign,
 
@@ -86,8 +94,13 @@ function Invoke-SigningBatch {
     }
 
     $signToolAvailable = [bool]$SignToolPath -and [System.IO.File]::Exists($SignToolPath)
+    if (-not $PSBoundParameters.ContainsKey('AccessPath')) {
+        $AccessPath = [string](Find-MsAccess)
+    }
+    $accessAvailable = [bool]$AccessPath -and [System.IO.File]::Exists($AccessPath)
+    # A timestamp retry on an Office file needs offclearsig.exe even when clearing was not asked for.
     $offClearSig = $null
-    if ($ClearOfficeSignatures) {
+    if ($ClearOfficeSignatures -or $TimestampMode -ne 'None') {
         $sip = Get-OfficeSipStatus | Where-Object { $_.Is64Bit -eq [Environment]::Is64BitProcess } | Select-Object -First 1
         if ($sip) {
             $offClearSig = $sip.OffClearSigPath
@@ -128,7 +141,7 @@ function Invoke-SigningBatch {
         }
 
         $provider = Get-FormatProvider -Id $info.ProviderId
-        $choice = Resolve-SigningEngine -Provider $provider -Requested $Engine -SignToolAvailable $signToolAvailable -Source $Source -TimestampMode $TimestampMode
+        $choice = Resolve-SigningEngine -Provider $provider -Requested $Engine -SignToolAvailable $signToolAvailable -AccessAvailable $accessAvailable -Source $Source -TimestampMode $TimestampMode
         if (-not $choice.Engine) {
             $result.Status = 'Failed'
             $result.Detail = "Not signed: $($choice.Reason)"
@@ -144,18 +157,21 @@ function Invoke-SigningBatch {
         }
 
         $parameters = @{
-            LiteralPath           = $file
-            Engine                = $choice.Engine
-            DigestAlgorithm       = $DigestAlgorithm
-            TimestampMode         = $TimestampMode
-            TimestampServer       = $TimestampServer
-            DualSign              = $DualSign
-            ClearOfficeSignatures = $ClearOfficeSignatures
-            OffClearSigPath       = $offClearSig
-            Description           = $Description
-            DescriptionUrl        = $DescriptionUrl
-            SignToolPath          = $SignToolPath
-            TimeoutSeconds        = $TimeoutSeconds
+            LiteralPath                = $file
+            Engine                     = $choice.Engine
+            DigestAlgorithm            = $DigestAlgorithm
+            TimestampMode              = $TimestampMode
+            TimestampServer            = $TimestampServer
+            TimestampRetryCount        = $TimestampRetryCount
+            TimestampRetryDelaySeconds = $TimestampRetryDelaySeconds
+            DualSign                   = $DualSign
+            ClearOfficeSignatures      = $ClearOfficeSignatures
+            OffClearSigPath            = $offClearSig
+            Description                = $Description
+            DescriptionUrl             = $DescriptionUrl
+            SignToolPath               = $SignToolPath
+            AccessPath                 = $AccessPath
+            TimeoutSeconds             = $TimeoutSeconds
         }
         if ($Source -eq 'Store') {
             $parameters.Certificate = $Certificate

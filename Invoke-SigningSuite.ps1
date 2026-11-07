@@ -27,8 +27,15 @@
 .PARAMETER CertificateFile
     Public certificate (.cer) for a digest signing library that does not supply one.
 
+.PARAMETER TimestampRetryCount
+    Number of times to sign a file again when the timestamp server cannot be reached or refuses the request. Default 3.
+
+.PARAMETER TimestampRetryDelaySeconds
+    Seconds to wait before each new attempt. Default 3.
+
 .PARAMETER Verify
-    Checks signatures instead of signing.
+    Checks signatures instead of signing. The exit code is 1 when any file is invalid, revoked, unreadable, or not
+    checked. Access databases are always not checked, because the tool cannot read Access VBA signatures.
 
 .PARAMETER RemoveSignature
     Removes the signature from every signed file instead of signing. -WhatIf lists what would be unsigned.
@@ -44,7 +51,7 @@
 
 .NOTES
     ScriptName : Invoke-SigningSuite.ps1
-    Version    : 2026.09.27.0007
+    Version    : 2026.11.07.0008
 #>
 [CmdletBinding(SupportsShouldProcess, DefaultParameterSetName = 'Store')]
 param(
@@ -86,6 +93,12 @@ param(
 
     [string]$TimestampServer,
 
+    [ValidateRange(0, 10)]
+    [int]$TimestampRetryCount = 3,
+
+    [ValidateRange(0, 60)]
+    [int]$TimestampRetryDelaySeconds = 3,
+
     [switch]$DualSign,
 
     [switch]$SkipValid,
@@ -125,7 +138,7 @@ $toolPath = if ($tool) { $tool.Path } else { '' }
 
 if ($Verify -or $RemoveSignature) {
     $mode = if ($Verify) { '-Verify' } else { '-RemoveSignature' }
-    $signingOnly = @('Engine', 'DigestAlgorithm', 'TimestampMode', 'TimestampServer', 'DualSign', 'SkipValid', 'ClearOfficeSignatures', 'Description', 'DescriptionUrl')
+    $signingOnly = @('Engine', 'DigestAlgorithm', 'TimestampMode', 'TimestampServer', 'TimestampRetryCount', 'TimestampRetryDelaySeconds', 'DualSign', 'SkipValid', 'ClearOfficeSignatures', 'Description', 'DescriptionUrl')
     $ignored = @($PSBoundParameters.Keys | Where-Object { $signingOnly -contains $_ })
     if ($ignored.Count -gt 0) {
         Write-Error "These options apply to signing, not to ${mode}: -$($ignored -join ', -')" -ErrorAction Continue
@@ -163,24 +176,27 @@ if ($Verify) {
         Write-Error 'No signable files were found.' -ErrorAction Continue
         exit 1
     }
-    if (@($results | Where-Object { $_.State -in 'Invalid', 'Revoked', 'Unknown' }).Count -gt 0) {
+    # NotChecked (Access databases) fails the run too: a verification that could not check a file did not pass it.
+    if (@($results | Where-Object { $_.State -in 'Invalid', 'Revoked', 'Unknown', 'NotChecked' }).Count -gt 0) {
         exit 1
     }
     exit 0
 }
 
 $batch = @{
-    Path                  = $Path
-    Engine                = $Engine
-    SignToolPath          = $toolPath
-    DigestAlgorithm       = $DigestAlgorithm
-    TimestampMode         = $TimestampMode
-    TimestampServer       = $TimestampServer
-    DualSign              = $DualSign
-    SkipValid             = $SkipValid
-    ClearOfficeSignatures = $ClearOfficeSignatures
-    Description           = $Description
-    DescriptionUrl        = $DescriptionUrl
+    Path                       = $Path
+    Engine                     = $Engine
+    SignToolPath               = $toolPath
+    DigestAlgorithm            = $DigestAlgorithm
+    TimestampMode              = $TimestampMode
+    TimestampServer            = $TimestampServer
+    TimestampRetryCount        = $TimestampRetryCount
+    TimestampRetryDelaySeconds = $TimestampRetryDelaySeconds
+    DualSign                   = $DualSign
+    SkipValid                  = $SkipValid
+    ClearOfficeSignatures      = $ClearOfficeSignatures
+    Description                = $Description
+    DescriptionUrl             = $DescriptionUrl
 }
 $batch += $shouldProcess
 

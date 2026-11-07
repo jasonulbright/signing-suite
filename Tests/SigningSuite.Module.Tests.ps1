@@ -452,6 +452,12 @@ public static string[] Split(string commandLine)
         $messages.Errors | Should -Be @('A certificate chain processed, but terminated in a root certificate which is not trusted by the trust provider.', 'An error occurred while attempting to sign: C:\x.ps1')
         $messages.Warnings | Should -Be @('Signing succeeded, but an error occurred.')
     }
+
+    It 'joins the timestamp server error that continues on a line with no indent' {
+        $text = "SignTool Error: The specified timestamp server either could not be reached or`r`nreturned an invalid response.`r`nSignTool Error: An error occurred while attempting to sign: C:\x.dll`r`n`r`nNumber of errors: 1`r`n"
+        $messages = ConvertFrom-SignToolOutput -Text $text
+        $messages.Errors | Should -Be @('The specified timestamp server either could not be reached or returned an invalid response.', 'An error occurred while attempting to sign: C:\x.dll')
+    }
 }
 
 Describe 'CSV export values' {
@@ -692,9 +698,165 @@ Describe 'Signing with the PowerShell engine' {
     It 'fails a file signed without the timestamp that was asked for' {
         $path = Join-Path $script:psRoot 'no-timestamp.ps1'
         [System.IO.File]::WriteAllText($path, "Write-Output 1`r`n")
-        $result = Invoke-FileSigning -LiteralPath $path -Engine PowerShell -Certificate $script:certificate -TimestampMode Authenticode -TimestampServer 'http://127.0.0.1:9/'
+        $result = Invoke-FileSigning -LiteralPath $path -Engine PowerShell -Certificate $script:certificate -TimestampMode Authenticode -TimestampServer 'http://127.0.0.1:9/' -TimestampRetryCount 2 -TimestampRetryDelaySeconds 0
         $result.Status | Should -Be 'Failed'
-        $result.Detail | Should -BeLike 'The file was signed without the requested timestamp*'
+        $result.Detail | Should -BeLike 'The file was signed without the requested timestamp*after 3 attempts*'
+    }
+
+    It 'signs again when the first attempt has no timestamp' {
+        $path = Join-Path $script:psRoot 'retry-timestamp.ps1'
+        [System.IO.File]::WriteAllText($path, "Write-Output 1`r`n")
+        $stateCalls = @{ Count = 0 }
+        $thumbprint = $script:certificate.Thumbprint
+        $signer = $script:certificate
+        Mock -ModuleName SigningSuite Set-AuthenticodeSignature {
+            [pscustomobject]@{ SignerCertificate = $signer; Status = 'Valid'; StatusMessage = '' }
+        }.GetNewClosure()
+        Mock -ModuleName SigningSuite Get-FileSignatureState {
+            $stateCalls.Count++
+            [pscustomobject]@{ State = 'Untrusted'; Message = 'self-signed'; Signer = 'CN=Test'; Thumbprint = $thumbprint; Timestamped = ($stateCalls.Count -ge 2) }
+        }.GetNewClosure()
+        $result = Invoke-FileSigning -LiteralPath $path -Engine PowerShell -Certificate $script:certificate -TimestampMode Authenticode -TimestampServer 'http://127.0.0.1:9/' -TimestampRetryDelaySeconds 0
+        $result.Status | Should -Be 'Signed'
+        $result.Detail | Should -BeLike '*Timestamped on attempt 2 of 4.*'
+        Should -Invoke -ModuleName SigningSuite Get-FileSignatureState -Times 2 -Exactly
+        Should -Invoke -ModuleName SigningSuite Set-AuthenticodeSignature -Times 2 -Exactly
+    }
+
+    It 'signs once when no timestamp is asked for' {
+        $path = Join-Path $script:psRoot 'no-retry.ps1'
+        [System.IO.File]::WriteAllText($path, "Write-Output 1`r`n")
+        Mock -ModuleName SigningSuite Start-Sleep { }
+        $result = Invoke-FileSigning -LiteralPath $path -Engine PowerShell -Certificate $script:certificate -TimestampMode None
+        $result.Status | Should -Be 'Signed'
+        Should -Invoke -ModuleName SigningSuite Start-Sleep -Times 0 -Exactly
+    }
+
+    It 'retries a signtool timestamp server error and not other signtool errors: <Case>' -ForEach @(
+        @{ Case = 'timestamp server'; ErrorLine = 'SignTool Error: The specified timestamp server either could not be reached or returned an invalid response.'; Calls = 2; Status = 'Signed' }
+        @{ Case = 'other error'; ErrorLine = 'SignTool Error: No certificates were found that met all the given criteria.'; Calls = 1; Status = 'Failed' }
+    ) {
+        $path = Join-Path $script:psRoot "signtool-retry-$($Case -replace ' ', '-').ps1"
+        [System.IO.File]::WriteAllText($path, "Write-Output 1`r`n")
+        $tool = Join-Path $script:psRoot 'signtool-stub.exe'
+        [System.IO.File]::WriteAllText($tool, 'stub')
+        $signToolCalls = @{ Count = 0 }
+        $errorText = $ErrorLine
+        $thumbprint = $script:certificate.Thumbprint
+        Mock -ModuleName SigningSuite Invoke-SignTool {
+            $signToolCalls.Count++
+            if ($signToolCalls.Count -eq 1) {
+                return [pscustomobject]@{ ExitCode = 1; TimedOut = $false; Output = ''; Error = $errorText; Errors = @($errorText -replace '^SignTool Error:\s*', ''); Warnings = @() }
+            }
+            [pscustomobject]@{ ExitCode = 0; TimedOut = $false; Output = 'Successfully signed'; Error = ''; Errors = @(); Warnings = @() }
+        }.GetNewClosure()
+        Mock -ModuleName SigningSuite Get-FileSignatureState {
+            [pscustomobject]@{ State = 'Untrusted'; Message = 'self-signed'; Signer = 'CN=Test'; Thumbprint = $thumbprint; Timestamped = $true }
+        }.GetNewClosure()
+        $result = Invoke-FileSigning -LiteralPath $path -Engine SignTool -SignToolPath $tool -Certificate $script:certificate -TimestampMode Rfc3161 -TimestampServer 'http://timestamp.example.test' -TimestampRetryDelaySeconds 0
+        $result.Status | Should -Be $Status
+        Should -Invoke -ModuleName SigningSuite Invoke-SignTool -Times $Calls -Exactly
+    }
+
+    It 'names the attempt count when every attempt hits a signtool timestamp server error' {
+        $path = Join-Path $script:psRoot 'signtool-retry-exhausted.ps1'
+        [System.IO.File]::WriteAllText($path, "Write-Output 1`r`n")
+        $tool = Join-Path $script:psRoot 'signtool-stub.exe'
+        [System.IO.File]::WriteAllText($tool, 'stub')
+        Mock -ModuleName SigningSuite Invoke-SignTool {
+            $text = 'SignTool Error: The specified timestamp server either could not be reached or returned an invalid response.'
+            [pscustomobject]@{ ExitCode = 1; TimedOut = $false; Output = ''; Error = $text; Errors = @($text -replace '^SignTool Error:\s*', ''); Warnings = @() }
+        }
+        $result = Invoke-FileSigning -LiteralPath $path -Engine SignTool -SignToolPath $tool -Certificate $script:certificate -TimestampMode Rfc3161 -TimestampServer 'http://timestamp.example.test' -TimestampRetryCount 1 -TimestampRetryDelaySeconds 0
+        $result.Status | Should -Be 'Failed'
+        $result.Detail | Should -BeLike '*timestamp server*Failed after 2 attempts.'
+        Should -Invoke -ModuleName SigningSuite Invoke-SignTool -Times 2 -Exactly
+    }
+
+    It 'retries an Office file only when its VBA signatures can be cleared first: <Case>' -ForEach @(
+        @{ Case = 'unsigned before the run'; Before = 'NotSigned'; Clear = $false; Discover = $false; Order = 'sign clear sign sign sign'; Status = 'Signed' }
+        @{ Case = 'unsigned, clearing tool found by the module'; Before = 'NotSigned'; Clear = $false; Discover = $true; Order = 'sign clear sign sign sign'; Status = 'Signed' }
+        @{ Case = 'signed before, clearing asked for'; Before = 'Valid'; Clear = $true; Discover = $false; Order = 'clear sign clear sign sign sign'; Status = 'Signed' }
+        @{ Case = 'signed before, no clearing'; Before = 'Valid'; Clear = $false; Discover = $false; Order = 'sign'; Status = 'Failed' }
+    ) {
+        $workbook = Join-Path $script:psRoot "retry-$($Case -replace '[ ,]+', '-').xlsm"
+        New-TestZip -Path $workbook -Entries @{ '[Content_Types].xml' = '<Types/>'; 'xl/vbaProject.bin' = 'x' }
+        $tool = Join-Path $script:psRoot 'signtool-stub.exe'
+        [System.IO.File]::WriteAllText($tool, 'stub')
+        $clearer = Join-Path $script:psRoot 'offclearsig-stub.exe'
+        [System.IO.File]::WriteAllText($clearer, 'stub')
+        $counter = @{ SignTool = 0 }
+        $events = [System.Collections.Generic.List[string]]::new()
+        $before = $Before
+        $thumbprint = $script:certificate.Thumbprint
+        Mock -ModuleName SigningSuite Get-SipSubject { [pscustomobject]@{ Supported = $true; Guid = [guid]::Empty; Name = 'Office'; ErrorCode = 0 } }
+        Mock -ModuleName SigningSuite Clear-OfficeVbaSignature { $events.Add('clear'); [pscustomobject]@{ Success = $true; Message = '' } }.GetNewClosure()
+        Mock -ModuleName SigningSuite Get-OfficeSipStatus { [pscustomobject]@{ Is64Bit = [Environment]::Is64BitProcess; OffClearSigPath = $clearer } }.GetNewClosure()
+        Mock -ModuleName SigningSuite Invoke-SignTool {
+            $counter.SignTool++
+            $events.Add('sign')
+            if ($counter.SignTool -eq 1) {
+                $text = 'SignTool Error: The specified timestamp server either could not be reached or returned an invalid response.'
+                return [pscustomobject]@{ ExitCode = 1; TimedOut = $false; Output = ''; Error = $text; Errors = @($text); Warnings = @() }
+            }
+            [pscustomobject]@{ ExitCode = 0; TimedOut = $false; Output = ''; Error = ''; Errors = @(); Warnings = @() }
+        }.GetNewClosure()
+        Mock -ModuleName SigningSuite Get-FileSignatureState {
+            if ($counter.SignTool -eq 0) {
+                return [pscustomobject]@{ State = $before; Message = ''; Signer = $null; Thumbprint = $null; Timestamped = $false }
+            }
+            [pscustomobject]@{ State = 'Untrusted'; Message = 'self-signed'; Signer = 'CN=Test'; Thumbprint = $thumbprint; Timestamped = $true }
+        }.GetNewClosure()
+        $parameters = @{
+            LiteralPath                = $workbook
+            Engine                     = 'SignTool'
+            SignToolPath               = $tool
+            Certificate                = $script:certificate
+            TimestampMode              = 'Rfc3161'
+            TimestampServer            = 'http://timestamp.example.test'
+            TimestampRetryDelaySeconds = 0
+            ClearOfficeSignatures      = $Clear
+        }
+        if (-not $Discover) {
+            $parameters.OffClearSigPath = $clearer
+        }
+        $result = Invoke-FileSigning @parameters
+        $result.Status | Should -Be $Status
+        ($events -join ' ') | Should -Be $Order
+    }
+
+    It 'treats a timestamp warning on a signed pass as a missing timestamp: <Case>' -ForEach @(
+        @{ Case = 'retry available'; Retries = 1; Calls = 4; Status = 'Signed' }
+        @{ Case = 'no retry left'; Retries = 0; Calls = 2; Status = 'Failed' }
+    ) {
+        $path = Join-Path $script:psRoot "dual-warning-$Retries.dll"
+        New-TestPortableExecutable -Path $path
+        $tool = Join-Path $script:psRoot 'signtool-stub.exe'
+        [System.IO.File]::WriteAllText($tool, 'stub')
+        $counter = @{ SignTool = 0 }
+        $thumbprint = $script:certificate.Thumbprint
+        Mock -ModuleName SigningSuite Invoke-SignTool {
+            $counter.SignTool++
+            if ($counter.SignTool -eq 2) {
+                return [pscustomobject]@{ ExitCode = 2; TimedOut = $false; Output = ''; Error = ''; Errors = @(); Warnings = @('Signing succeeded, but an error occurred while attempting to timestamp: dual.dll') }
+            }
+            [pscustomobject]@{ ExitCode = 0; TimedOut = $false; Output = ''; Error = ''; Errors = @(); Warnings = @() }
+        }.GetNewClosure()
+        Mock -ModuleName SigningSuite Get-FileSignatureState {
+            [pscustomobject]@{ State = 'Untrusted'; Message = 'self-signed'; Signer = 'CN=Test'; Thumbprint = $thumbprint; Timestamped = $true }
+        }.GetNewClosure()
+        $result = Invoke-FileSigning -LiteralPath $path -Engine SignTool -SignToolPath $tool -Certificate $script:certificate -DualSign -TimestampMode Rfc3161 -TimestampServer 'http://timestamp.example.test' -TimestampRetryCount $Retries -TimestampRetryDelaySeconds 0
+        $result.Status | Should -Be $Status
+        Should -Invoke -ModuleName SigningSuite Invoke-SignTool -Times $Calls -Exactly
+    }
+
+    It 'recognizes timestamp failures in signing output: <Text>' -ForEach @(
+        @{ Text = 'SignTool Error: The specified timestamp server either could not be reached or returned an invalid response.'; Expected = $true }
+        @{ Text = 'SignTool Warning: Signing succeeded, but an error occurred while attempting to timestamp: a.exe'; Expected = $true }
+        @{ Text = 'SignTool Error: No certificates were found that met all the given criteria.'; Expected = $false }
+        @{ Text = ''; Expected = $false }
+    ) {
+        InModuleScope SigningSuite -Parameters @{ Text = $Text } { param($Text) Test-TimestampFailureText -Text $Text } | Should -Be $Expected
     }
 
     It 'reports a missing file and a timestamp request without a server' {
@@ -801,6 +963,304 @@ Describe 'Signing with the SignTool engine and a digest signing library' {
         $parameters = $script:common.Clone()
         $parameters.SignToolPath = Join-Path $TestDrive 'nope\signtool.exe'
         (Invoke-FileSigning -LiteralPath (Join-Path $script:toolRoot 'script.ps1') @parameters).Detail | Should -BeLike 'signtool.exe was not found*'
+    }
+}
+
+Describe 'Access databases' {
+
+    BeforeAll {
+        $script:accessRoot = [System.IO.Directory]::CreateDirectory((Join-Path $TestDrive 'access [x]')).FullName
+        $pfx = Join-Path $TestDrive 'access.pfx'
+        New-TestPfx -Path $pfx
+        $script:accessCertificate = Import-TestSigningCertificate -Path $pfx
+        foreach ($name in 'App.accdb', 'App.accde', 'Old.mdb', 'Old.mde') {
+            [System.IO.File]::WriteAllBytes((Join-Path $script:accessRoot $name), [byte[]](1..64))
+        }
+        $script:accessStub = Join-Path $script:accessRoot 'MSACCESS.EXE'
+        [System.IO.File]::WriteAllText($script:accessStub, 'stub')
+        $script:testKey = "Software\SigningSuiteTests\$([guid]::NewGuid().ToString('N'))\VBA\Security"
+        $script:savedKeyPath = & (Get-Module SigningSuite) { $script:VbaSecurityKeyPath }
+        & (Get-Module SigningSuite) { param($k) $script:VbaSecurityKeyPath = $k } $script:testKey
+        $script:readTestKey = {
+            $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($script:testKey)
+            if (-not $key) { return $null }
+            try {
+                $values = @{}
+                foreach ($name in $key.GetValueNames()) { $values[$name] = $key.GetValue($name) }
+                $values
+            }
+            finally { $key.Close() }
+        }
+    }
+
+    AfterAll {
+        & (Get-Module SigningSuite) { param($k) $script:VbaSecurityKeyPath = $k } $script:savedKeyPath
+        [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKeyTree(($script:testKey -replace '\\VBA\\Security$', ''), $false)
+        $parent = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\SigningSuiteTests')
+        if ($parent) {
+            $empty = $parent.SubKeyCount -eq 0 -and $parent.ValueCount -eq 0
+            $parent.Close()
+            if ($empty) { [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKey('Software\SigningSuiteTests', $false) }
+        }
+        Remove-TestKey -Certificate $script:accessCertificate
+    }
+
+    It 'maps <Extension> to the Access provider' -ForEach @(
+        @{ Extension = '.accdb' }, @{ Extension = '.accde' }, @{ Extension = '.mdb' }, @{ Extension = '.MDE' }
+    ) {
+        (Get-FormatProvider -Extension $Extension).Id | Should -Be 'AccessVba'
+    }
+
+    It 'finds Access databases in a folder' {
+        $found = @(Find-SignableFile -Path $script:accessRoot | ForEach-Object { [System.IO.Path]::GetFileName($_) })
+        foreach ($name in 'App.accdb', 'App.accde', 'Old.mdb', 'Old.mde') {
+            $found | Should -Contain $name
+        }
+    }
+
+    It 'builds the MSACCESS.EXE arguments with the thumbprint selector' {
+        $arguments = New-AccessSignArgument -LiteralPath 'C:\x y\App.accdb' -Thumbprint 'ab cd ef 01 23 45 67 89 ab cd ef 01 23 45 67 89 ab cd ef 01'
+        $arguments | Should -Be @('C:\x y\App.accdb', '/sign', '\ABCDEF0123456789ABCDEF0123456789ABCDEF01')
+        { New-AccessSignArgument -LiteralPath 'a.accdb' -Thumbprint 'not a thumbprint' } | Should -Throw
+    }
+
+    It 'chooses the Access engine whatever engine was requested: <Case>' -ForEach @(
+        @{ Case = 'automatic'; Requested = 'Auto'; Access = $true; Source = 'Store'; Engine = 'Access'; Reason = $null }
+        @{ Case = 'PowerShell requested'; Requested = 'PowerShell'; Access = $true; Source = 'Store'; Engine = 'Access'; Reason = $null }
+        @{ Case = 'Access missing'; Requested = 'Auto'; Access = $false; Source = 'Store'; Engine = $null; Reason = 'Microsoft Access was not found*' }
+        @{ Case = 'digest signing library'; Requested = 'SignTool'; Access = $true; Source = 'Dlib'; Engine = $null; Reason = 'Access signs only with a certificate from the certificate store.' }
+    ) {
+        $choice = Resolve-SigningEngine -Provider (Get-FormatProvider -Id 'AccessVba') -Requested $Requested -SignToolAvailable $true -AccessAvailable $Access -Source $Source -TimestampMode Rfc3161
+        $choice.Engine | Should -Be $Engine
+        if ($Reason) { $choice.Reason | Should -BeLike $Reason }
+    }
+
+    It 'lists <Name> as ready with a signature it does not read' -ForEach @(
+        @{ Name = 'App.accdb'; Microsoft365 = $true }
+        @{ Name = 'Old.mdb'; Microsoft365 = $false }
+    ) {
+        $info = Get-SignableFileInfo -LiteralPath (Join-Path $script:accessRoot $Name)
+        $info.Status | Should -Be 'Ready'
+        $info.Format | Should -Be 'Access VBA'
+        $info.SignatureState | Should -Be 'NotChecked'
+        $info.Detail | Should -BeLike '*cannot read Access VBA signatures*'
+        ($info.Detail -like '*Microsoft 365*') | Should -Be $Microsoft365
+    }
+
+    It 'reports a read-only database as failed in the list' {
+        $path = Join-Path $script:accessRoot 'ReadOnly.accdb'
+        [System.IO.File]::WriteAllBytes($path, [byte[]](1..8))
+        (Get-Item -LiteralPath $path).IsReadOnly = $true
+        try {
+            $info = Get-SignableFileInfo -LiteralPath $path
+            $info.Status | Should -Be 'Failed'
+            $info.Detail | Should -BeLike 'The file is read-only.*'
+        }
+        finally {
+            (Get-Item -LiteralPath $path).IsReadOnly = $false
+        }
+    }
+
+    It 'reports the signature state as not checked in verify and in the list text' {
+        (Get-FileSignatureState -LiteralPath (Join-Path $script:accessRoot 'App.accdb')).State | Should -Be 'NotChecked'
+        $tool = Join-Path $script:accessRoot 'signtool-stub.exe'
+        [System.IO.File]::WriteAllText($tool, 'stub')
+        Mock -ModuleName SigningSuite Invoke-SignTool { throw 'signtool must not run for an Access database.' }
+        $verification = Test-FileSignature -LiteralPath (Join-Path $script:accessRoot 'App.accdb') -SignToolPath $tool -SkipRevocation
+        Should -Invoke -ModuleName SigningSuite Invoke-SignTool -Times 0 -Exactly
+        $verification.State | Should -Be 'NotChecked'
+        $verification.Detail | Should -BeLike 'Not checked.*'
+        $verification.Detail | Should -Not -BeLike '*timestamped*'
+        ConvertTo-SignatureText -State 'NotChecked' | Should -Be 'Not checked'
+    }
+
+    It 'refuses to remove an Access signature and says how to remove it' {
+        $result = Remove-FileSignature -LiteralPath (Join-Path $script:accessRoot 'App.accdb') -Confirm:$false
+        $result.Status | Should -Be 'Failed'
+        $result.Detail | Should -BeLike '*Tools > Digital Signature > Remove*'
+    }
+
+    It 'writes the VBA signing values for the run and restores the earlier ones' {
+        $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($script:testKey)
+        $key.SetValue('TimeStampURL', 'http://user.example.test', [Microsoft.Win32.RegistryValueKind]::String)
+        $key.SetValue('TimeStampRetryDelay', 3, [Microsoft.Win32.RegistryValueKind]::DWord)
+        $key.Close()
+        $snapshot = InModuleScope SigningSuite { Set-VbaSigningSetting -TimestampServer 'http://timestamp.example.test' -TimestampRetryCount 2 -TimestampRetryDelaySeconds 4 -DigestAlgorithm SHA384 -Confirm:$false }
+        $during = & $script:readTestKey
+        $during.TimeStampURL | Should -Be 'http://timestamp.example.test'
+        $during.TimeStampRetryCount | Should -Be 2
+        $during.TimeStampRetryDelay | Should -Be 4000 -Because 'the delay value is in milliseconds'
+        $during.V1HashEnhanced | Should -Be 3
+        InModuleScope SigningSuite -Parameters @{ Snapshot = $snapshot } { param($Snapshot) Restore-VbaSigningSetting -Snapshot $Snapshot -Confirm:$false }
+        $after = & $script:readTestKey
+        $after.TimeStampURL | Should -Be 'http://user.example.test'
+        $after.TimeStampRetryDelay | Should -Be 3
+        $after.ContainsKey('TimeStampRetryCount') | Should -BeFalse
+        $after.ContainsKey('V1HashEnhanced') | Should -BeFalse
+        [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKey($script:testKey, $false)
+    }
+
+    It 'removes a user timestamp server for a run without a timestamp and removes a key it created' {
+        $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($script:testKey)
+        $key.SetValue('TimeStampURL', 'http://user.example.test', [Microsoft.Win32.RegistryValueKind]::String)
+        $key.Close()
+        $snapshot = InModuleScope SigningSuite { Set-VbaSigningSetting -TimestampServer '' -Confirm:$false }
+        (& $script:readTestKey).ContainsKey('TimeStampURL') | Should -BeFalse
+        InModuleScope SigningSuite -Parameters @{ Snapshot = $snapshot } { param($Snapshot) Restore-VbaSigningSetting -Snapshot $Snapshot -Confirm:$false }
+        (& $script:readTestKey).TimeStampURL | Should -Be 'http://user.example.test'
+        [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKey($script:testKey, $false)
+
+        $snapshot = InModuleScope SigningSuite { Set-VbaSigningSetting -TimestampServer 'http://timestamp.example.test' -Confirm:$false }
+        InModuleScope SigningSuite -Parameters @{ Snapshot = $snapshot } { param($Snapshot) Restore-VbaSigningSetting -Snapshot $Snapshot -Confirm:$false }
+        & $script:readTestKey | Should -BeNullOrEmpty -Because 'the key did not exist before the run'
+    }
+
+    Context 'signing through Access' {
+
+        BeforeEach {
+            Mock -ModuleName SigningSuite Test-CurrentUserCertificate { $true }
+        }
+
+        It 'signs, reports the signature as not checked, and sets the timestamp values only during the run' {
+            $path = Join-Path $script:accessRoot 'Sign.accdb'
+            [System.IO.File]::WriteAllBytes($path, [byte[]](1..64))
+            # A mock body made with GetNewClosure does not receive the bound parameters, so the capture goes through a global.
+            $global:SigningSuiteAccessRun = @{ Reader = $script:readTestKey }
+            Mock -ModuleName SigningSuite Invoke-AccessProcess {
+                $global:SigningSuiteAccessRun.Values = & $global:SigningSuiteAccessRun.Reader
+                $global:SigningSuiteAccessRun.Arguments = $ArgumentList
+                [System.IO.File]::AppendAllText($ArgumentList[0], 'signed')
+                [pscustomobject]@{ TimedOut = $false; ExitCode = 0; DialogText = '' }
+            }
+            try {
+                $result = Invoke-FileSigning -LiteralPath $path -Engine Access -AccessPath $script:accessStub -Certificate $script:accessCertificate -TimestampMode Rfc3161 -TimestampServer 'http://timestamp.example.test' -TimestampRetryCount 3 -TimestampRetryDelaySeconds 3
+                $seen = $global:SigningSuiteAccessRun
+            }
+            finally {
+                Remove-Variable -Name SigningSuiteAccessRun -Scope Global
+            }
+            $result.Status | Should -Be 'Signed'
+            $result.SignatureState | Should -Be 'NotChecked'
+            $result.Detail | Should -BeLike 'Access closed without an error and changed the database.*timestamp was requested from http://timestamp.example.test*Tools > Digital Signature*'
+            $seen.Arguments | Should -Be @($path, '/sign', "\$($script:accessCertificate.Thumbprint)")
+            $seen.Values.TimeStampURL | Should -Be 'http://timestamp.example.test'
+            $seen.Values.TimeStampRetryDelay | Should -Be 3000
+            & $script:readTestKey | Should -BeNullOrEmpty -Because 'the run restores the values that existed before it'
+        }
+
+        It 'fails with the Access dialog text when Access does not finish' {
+            $path = Join-Path $script:accessRoot 'Dialog.accdb'
+            [System.IO.File]::WriteAllBytes($path, [byte[]](1..64))
+            Mock -ModuleName SigningSuite Invoke-AccessProcess { [pscustomobject]@{ TimedOut = $true; ExitCode = $null; DialogText = 'Microsoft Access cannot save the digital signature at this time.' } }
+            $result = Invoke-FileSigning -LiteralPath $path -Engine Access -AccessPath $script:accessStub -Certificate $script:accessCertificate
+            $result.Status | Should -Be 'Failed'
+            $result.Detail | Should -Be 'Access showed: Microsoft Access cannot save the digital signature at this time. Access was closed before it finished; open the database in Access to check it. Signing .accdb and .accde files needs Access for Microsoft 365.'
+        }
+
+        It 'deletes the lock file that a stopped Access leaves behind' {
+            $path = Join-Path $script:accessRoot 'Stopped.mdb'
+            [System.IO.File]::WriteAllBytes($path, [byte[]](1..64))
+            Mock -ModuleName SigningSuite Invoke-AccessProcess {
+                [System.IO.File]::WriteAllText([System.IO.Path]::ChangeExtension($ArgumentList[0], '.ldb'), 'lock')
+                [pscustomobject]@{ TimedOut = $true; ExitCode = $null; DialogText = '' }
+            }
+            $result = Invoke-FileSigning -LiteralPath $path -Engine Access -AccessPath $script:accessStub -Certificate $script:accessCertificate
+            $result.Status | Should -Be 'Failed'
+            $result.Detail | Should -Be 'Access did not finish within 90 seconds. Access was closed before it finished; open the database in Access to check it.'
+            Test-Path -LiteralPath (Join-Path $script:accessRoot 'Stopped.ldb') | Should -BeFalse
+        }
+
+        It 'fails when Access closes without changing the database' {
+            $path = Join-Path $script:accessRoot 'Unchanged.mdb'
+            [System.IO.File]::WriteAllBytes($path, [byte[]](1..64))
+            Mock -ModuleName SigningSuite Invoke-AccessProcess { [pscustomobject]@{ TimedOut = $false; ExitCode = 0; DialogText = '' } }
+            $result = Invoke-FileSigning -LiteralPath $path -Engine Access -AccessPath $script:accessStub -Certificate $script:accessCertificate
+            $result.Status | Should -Be 'Failed'
+            $result.Detail | Should -BeLike 'Access closed without changing the database*'
+        }
+
+        It 'refuses before starting Access: <Case>' -ForEach @(
+            @{ Case = 'certificate not in CurrentUser\My'; InStore = $false; Lock = $false; Tool = $true; Detail = 'Access reads the certificate from CurrentUser\My only*' }
+            @{ Case = 'database open'; InStore = $true; Lock = $true; Tool = $true; Detail = 'The database is open, or an earlier Access session stopped without closing it (Locked.laccdb exists)*delete Locked.laccdb*' }
+            @{ Case = 'Access missing'; InStore = $true; Lock = $false; Tool = $false; Detail = 'Microsoft Access was not found*' }
+        ) {
+            $path = Join-Path $script:accessRoot 'Locked.accdb'
+            [System.IO.File]::WriteAllBytes($path, [byte[]](1..64))
+            $lock = Join-Path $script:accessRoot 'Locked.laccdb'
+            if ($Lock) { [System.IO.File]::WriteAllText($lock, 'lock') } elseif (Test-Path -LiteralPath $lock) { Remove-Item -LiteralPath $lock }
+            $inStore = $InStore
+            Mock -ModuleName SigningSuite Test-CurrentUserCertificate { $inStore }.GetNewClosure()
+            Mock -ModuleName SigningSuite Invoke-AccessProcess { throw 'Access must not start.' }
+            $tool = if ($Tool) { $script:accessStub } else { Join-Path $script:accessRoot 'missing\MSACCESS.EXE' }
+            $result = Invoke-FileSigning -LiteralPath $path -Engine Access -AccessPath $tool -Certificate $script:accessCertificate
+            $result.Status | Should -Be 'Failed'
+            $result.Detail | Should -BeLike $Detail
+            Should -Invoke -ModuleName SigningSuite Invoke-AccessProcess -Times 0 -Exactly
+        }
+
+        It 'reports a batch run with the Access engine, and without Access the reason' {
+            $folder = [System.IO.Directory]::CreateDirectory((Join-Path $script:accessRoot 'batch')).FullName
+            [System.IO.File]::WriteAllBytes((Join-Path $folder 'One.accdb'), [byte[]](1..64))
+            Mock -ModuleName SigningSuite Invoke-AccessProcess {
+                [System.IO.File]::AppendAllText($ArgumentList[0], 'signed')
+                [pscustomobject]@{ TimedOut = $false; ExitCode = 0; DialogText = '' }
+            }
+            $signed = @(Invoke-SigningBatch -Path $folder -Certificate $script:accessCertificate -AccessPath $script:accessStub)
+            $signed[0].Engine | Should -Be 'Access'
+            $signed[0].Status | Should -Be 'Signed'
+            $missing = @(Invoke-SigningBatch -Path $folder -Certificate $script:accessCertificate -AccessPath '')
+            $missing[0].Status | Should -Be 'Failed'
+            $missing[0].Detail | Should -BeLike 'Not signed: Microsoft Access was not found*'
+        }
+    }
+
+    It 'stops a program that does not exit in time and returns the exit code of one that does' {
+        $host32 = Join-Path $env:windir 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        $slow = InModuleScope SigningSuite -Parameters @{ Exe = $host32 } { param($Exe) Invoke-AccessProcess -AccessPath $Exe -ArgumentList @('-NoProfile', '-Command', 'Start-Sleep -Seconds 60') -TimeoutSeconds 2 }
+        $slow.TimedOut | Should -BeTrue
+        $fast = InModuleScope SigningSuite -Parameters @{ Exe = $host32 } { param($Exe) Invoke-AccessProcess -AccessPath $Exe -ArgumentList @('-NoProfile', '-Command', 'exit 3') -TimeoutSeconds 30 }
+        $fast.TimedOut | Should -BeFalse
+        $fast.ExitCode | Should -Be 3
+    }
+
+    It 'reads dialog text in a time-limited runspace and returns nothing for a process without dialogs' {
+        $text = InModuleScope SigningSuite { Read-ProcessDialogText -ProcessId $PID -TimeoutSeconds 15 }
+        $text | Should -BeOfType [string]
+        $text | Should -Be ''
+    }
+
+    It 'waits for an Access signing run of the same user in another process' {
+        $path = Join-Path $script:accessRoot 'Waits.accdb'
+        [System.IO.File]::WriteAllBytes($path, [byte[]](1..64))
+        $ready = Join-Path $script:accessRoot 'mutex-ready.txt'
+        $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+        $holder = "`$m = [System.Threading.Mutex]::new(`$false, 'Global\SigningSuite.VbaSigningSetting.$sid'); [void]`$m.WaitOne(); [System.IO.File]::WriteAllText('$ready', 'x'); Start-Sleep -Seconds 8; `$m.ReleaseMutex()"
+        $process = Start-Process -FilePath (Join-Path $env:windir 'System32\WindowsPowerShell\v1.0\powershell.exe') -ArgumentList @('-NoProfile', '-Command', $holder) -WindowStyle Hidden -PassThru
+        try {
+            $deadline = [DateTime]::UtcNow.AddSeconds(20)
+            while (-not [System.IO.File]::Exists($ready) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 100 }
+            [System.IO.File]::Exists($ready) | Should -BeTrue
+            Mock -ModuleName SigningSuite Test-CurrentUserCertificate { $true }
+            Mock -ModuleName SigningSuite Invoke-AccessProcess { throw 'Access must not start while another run holds the lock.' }
+            $result = Invoke-FileSigning -LiteralPath $path -Engine Access -AccessPath $script:accessStub -Certificate $script:accessCertificate -TimeoutSeconds 1
+            $result.Status | Should -Be 'Failed'
+            $result.Detail | Should -Be 'Another Access signing run of this user did not finish within 1 seconds.'
+            Should -Invoke -ModuleName SigningSuite Invoke-AccessProcess -Times 0 -Exactly
+        }
+        finally {
+            if (-not $process.HasExited) { $process.Kill() }
+        }
+    }
+
+    It 'passes a database path with spaces and brackets as one argument' {
+        $host32 = Join-Path $env:windir 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        $script = Join-Path $script:accessRoot 'echo args.ps1'
+        $out = Join-Path $script:accessRoot 'args.txt'
+        [System.IO.File]::WriteAllText($script, "param([string]`$Out) `$rest = @(`$args); [System.IO.File]::WriteAllText(`$Out, (`$rest -join '|'))`r`n")
+        $arguments = @('-NoProfile', '-File', $script, $out) + (New-AccessSignArgument -LiteralPath 'C:\My Files [1]\App x.accdb' -Thumbprint ('A' * 40))
+        $run = InModuleScope SigningSuite -Parameters @{ Exe = $host32; Arguments = $arguments } { param($Exe, $Arguments) Invoke-AccessProcess -AccessPath $Exe -ArgumentList $Arguments -TimeoutSeconds 30 }
+        $run.ExitCode | Should -Be 0
+        [System.IO.File]::ReadAllText($out) | Should -Be ('C:\My Files [1]\App x.accdb|/sign|\' + ('A' * 40))
     }
 }
 

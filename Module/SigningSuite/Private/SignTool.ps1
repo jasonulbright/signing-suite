@@ -380,6 +380,10 @@ function ConvertFrom-SignToolOutput {
         elseif ($null -ne $current -and $line -match '^\s+\S') {
             $current += ' ' + $line.Trim()
         }
+        # The timestamp server error continues mid-sentence on a line with no indent.
+        elseif ($null -ne $current -and $line -match '^\S' -and $current -notmatch '[.:!?]\s*$' -and $line -notmatch '^(Number of |Done |Successfully |Error information:|Status:)') {
+            $current += ' ' + $line.Trim()
+        }
         elseif ($null -ne $current) {
             $target.Add($current.Trim())
             $current = $null

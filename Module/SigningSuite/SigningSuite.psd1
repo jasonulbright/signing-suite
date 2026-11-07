@@ -1,10 +1,10 @@
 @{
     RootModule           = 'SigningSuite.psm1'
-    ModuleVersion        = '2026.9.27.7'
+    ModuleVersion        = '2026.11.7.8'
     GUID                 = '4f1c7a2e-9b3d-4e8a-a6f1-2c5d8e9b7a31'
     Author               = 'Jason Ulbright'
     Copyright            = '(c) Jason Ulbright. All rights reserved.'
-    Description          = 'Authenticode signing for scripts, executables, installers, catalogs, app packages and Office VBA projects.'
+    Description          = 'Authenticode signing for scripts, executables, installers, catalogs, app packages, and the VBA projects in Office files and Access databases.'
     PowerShellVersion    = '5.1'
     CompatiblePSEditions = @('Desktop')
     FunctionsToExport    = @(
@@ -14,6 +14,7 @@
         'ConvertTo-SafeCsvField'
         'ConvertTo-SignatureText'
         'Find-ArtifactSigningDlib'
+        'Find-MsAccess'
         'Find-SignableFile'
         'Find-SignTool'
         'Get-AppPackageIdentity'
@@ -35,6 +36,7 @@
         'Invoke-SignatureRemovalBatch'
         'Invoke-SigningBatch'
         'Invoke-SignTool'
+        'New-AccessSignArgument'
         'New-ArtifactSigningMetadata'
         'New-SignToolSignArgument'
         'Remove-FileSignature'
@@ -52,7 +54,7 @@
     VariablesToExport    = @()
     AliasesToExport      = @()
     PrivateData          = @{
-        SigningSuiteVersion = '2026.09.27.0007'
+        SigningSuiteVersion = '2026.11.07.0008'
         PSData              = @{
             Tags = @('Authenticode', 'CodeSigning', 'SignTool', 'VBA', 'MSIX')
         }
