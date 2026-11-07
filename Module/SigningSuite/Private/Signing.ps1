@@ -107,7 +107,8 @@ function New-SigningResult {
 function Invoke-FileSigning {
     <#
     .SYNOPSIS
-        Signs one file with the PowerShell engine (Set-AuthenticodeSignature) or the SignTool engine (signtool.exe).
+        Signs one file with the PowerShell engine (Set-AuthenticodeSignature), the SignTool engine (signtool.exe), or,
+        for Access databases, the Access engine (MSACCESS.EXE /sign).
     .OUTPUTS
         Object with Path, Status (Signed, Failed, Skipped), Detail, Passes, SignatureState, Signer, SignerThumbprint, Timestamped.
     #>
@@ -116,7 +117,7 @@ function Invoke-FileSigning {
         [Parameter(Mandatory)]
         [string]$LiteralPath,
 
-        [ValidateSet('PowerShell', 'SignTool')]
+        [ValidateSet('PowerShell', 'SignTool', 'Access')]
         [string]$Engine = 'PowerShell',
 
         [System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate,
@@ -125,6 +126,8 @@ function Invoke-FileSigning {
         [string]$StoreLocation = 'CurrentUser',
 
         [string]$SignToolPath,
+
+        [string]$AccessPath,
 
         [string]$DlibPath,
 
@@ -167,7 +170,7 @@ function Invoke-FileSigning {
         return New-SigningResult -Path $LiteralPath -Status 'Skipped' -Detail 'Not a signable file type.'
     }
     if ($provider.Engines -notcontains $Engine) {
-        return New-SigningResult -Path $LiteralPath -Status 'Failed' -Detail "$($provider.Name) files need the SignTool engine."
+        return New-SigningResult -Path $LiteralPath -Status 'Failed' -Detail "$($provider.Name) files need the $($provider.Engines -join ' or ') engine."
     }
     if (-not [System.IO.File]::Exists($LiteralPath)) {
         return New-SigningResult -Path $LiteralPath -Status 'Failed' -Detail 'The file no longer exists.'
@@ -177,6 +180,23 @@ function Invoke-FileSigning {
     }
     if ($TimestampMode -ne 'None' -and -not $TimestampServer) {
         return New-SigningResult -Path $LiteralPath -Status 'Failed' -Detail 'A timestamp was requested without a timestamp server.'
+    }
+
+    if ($Engine -eq 'Access') {
+        $access = @{
+            LiteralPath                = $LiteralPath
+            AccessPath                 = $AccessPath
+            Certificate                = $Certificate
+            DigestAlgorithm            = $DigestAlgorithm
+            TimestampMode              = $TimestampMode
+            TimestampServer            = $TimestampServer
+            TimestampRetryCount        = $TimestampRetryCount
+            TimestampRetryDelaySeconds = $TimestampRetryDelaySeconds
+            # Access reports a failure in a dialog and waits, so the wait is shorter than for signtool. Access retries the
+            # timestamp server itself, so a run that asks for a timestamp keeps the caller's full timeout.
+            TimeoutSeconds             = if ($TimestampMode -ne 'None') { $TimeoutSeconds } else { [Math]::Min($TimeoutSeconds, 90) }
+        }
+        return Invoke-AccessFileSigning @access
     }
 
     # Set-AuthenticodeSignature keeps a file with no registered SIP open in this process until the process exits.
@@ -536,7 +556,7 @@ function Test-FileSignature {
     $state = Get-FileSignatureState -LiteralPath $LiteralPath -CheckRevocation:(-not $SkipRevocation)
     $count = $null
     $timestamps = $null
-    if ($SignToolPath -and [System.IO.File]::Exists($SignToolPath) -and $state.State -ne 'NotSigned') {
+    if ($SignToolPath -and [System.IO.File]::Exists($SignToolPath) -and $state.State -notin 'NotSigned', 'NotChecked') {
         $run = Invoke-SignTool -SignToolPath $SignToolPath -ArgumentList @('verify', '/pa', '/all', '/v', '--', $LiteralPath) -TimeoutSeconds $TimeoutSeconds
         $lines = ($run.Output + "`n" + $run.Error) -split "`r?`n"
         $count = @($lines | Where-Object { $_ -match '^\s*Signature Index:' }).Count
@@ -549,12 +569,13 @@ function Test-FileSignature {
         'Untrusted' { "Signed by $($state.Signer); not trusted on this PC: $($state.Message)" }
         'Revoked' { "Signed by $($state.Signer); the signing certificate or its issuer has been revoked." }
         'Invalid' { 'The signature is invalid; the file changed after signing.' }
+        'NotChecked' { "Not checked. $($state.Message)" }
         default { "The signature could not be checked: $($state.Message)" }
     }
     if ($null -ne $count -and $count -gt 0) {
         $detail += " $count signature(s), $timestamps timestamped."
     }
-    elseif ($state.State -ne 'NotSigned') {
+    elseif ($state.State -notin 'NotSigned', 'NotChecked') {
         $detail += if ($state.Timestamped) { ' Timestamped.' } else { ' Not timestamped.' }
     }
 

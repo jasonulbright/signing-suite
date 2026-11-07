@@ -2,8 +2,10 @@ function Resolve-SigningEngine {
     <#
     .SYNOPSIS
         Picks the engine for one file from the requested engine, the file format, the signing source and the options.
+    .DESCRIPTION
+        Access databases are always signed by Access, whatever engine was requested.
     .OUTPUTS
-        Object with Engine (PowerShell, SignTool, or $null) and Reason (why no engine can sign the file).
+        Object with Engine (PowerShell, SignTool, Access, or $null) and Reason (why no engine can sign the file).
     #>
     [CmdletBinding()]
     param(
@@ -15,12 +17,24 @@ function Resolve-SigningEngine {
 
         [bool]$SignToolAvailable,
 
+        [bool]$AccessAvailable,
+
         [ValidateSet('Store', 'ArtifactSigning', 'Dlib')]
         [string]$Source = 'Store',
 
         [ValidateSet('None', 'Rfc3161', 'Authenticode')]
         [string]$TimestampMode = 'None'
     )
+
+    if ($Provider.Engines -contains 'Access') {
+        if ($Source -ne 'Store') {
+            return [pscustomobject]@{ Engine = $null; Reason = 'Access signs only with a certificate from the certificate store.' }
+        }
+        if (-not $AccessAvailable) {
+            return [pscustomobject]@{ Engine = $null; Reason = 'Microsoft Access was not found; Access databases are signed by Access itself.' }
+        }
+        return [pscustomobject]@{ Engine = 'Access'; Reason = $null }
+    }
 
     $needsSignTool = [System.Collections.Generic.List[string]]::new()
     if ($Source -eq 'ArtifactSigning') {
@@ -81,6 +95,7 @@ function ConvertTo-SignatureText {
         'Untrusted' { "Untrusted: $Signer" }
         'Invalid' { 'Invalid (file changed)' }
         'Unknown' { 'Unreadable' }
+        'NotChecked' { 'Not checked' }
         default { '' }
     }
 }

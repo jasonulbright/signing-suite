@@ -172,6 +172,11 @@ function Remove-FileSignature {
         $result.Detail = 'The file is read-only.'
         return [pscustomobject]$result
     }
+    if ($provider.Id -eq 'AccessVba') {
+        $result.SignatureState = 'NotChecked'
+        $result.Detail = 'The app cannot remove Access VBA signatures. Open the database, then in the Visual Basic Editor select Tools > Digital Signature > Remove.'
+        return [pscustomobject]$result
+    }
 
     $before = Get-FileSignatureState -LiteralPath $LiteralPath
     $result.SignatureState = $before.State

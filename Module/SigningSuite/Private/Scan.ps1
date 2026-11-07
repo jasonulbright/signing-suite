@@ -295,6 +295,20 @@ function Get-SignableFileInfo {
     }
 
     $notes = [System.Collections.Generic.List[string]]::new()
+    if ($provider.Id -eq 'AccessVba') {
+        # No SIP covers Access databases, so the SIP check and the signature read below do not apply.
+        $info.SignatureState = 'NotChecked'
+        $notes.Add('Signed by Access (MSACCESS.EXE /sign). The app cannot read Access VBA signatures.')
+        if ($info.Extension -in '.accdb', '.accde') {
+            $notes.Add('Needs Access for Microsoft 365.')
+        }
+        if ($readOnly) {
+            $info.Status = 'Failed'
+            $notes.Insert(0, 'The file is read-only.')
+        }
+        $info.Detail = $notes -join ' '
+        return $info
+    }
     if ($provider.Id -eq 'OfficeVba') {
         try {
             $hasVba = Test-OfficeVbaProject -LiteralPath $LiteralPath

@@ -73,6 +73,16 @@ $script:FormatProviders = @(
         Description    = 'VBA projects in Excel, Word, PowerPoint, Visio, Project and Publisher files'
     }
     [pscustomobject]@{
+        Id             = 'AccessVba'
+        Name           = 'Access VBA'
+        Extensions     = @('.accdb', '.accde', '.mdb', '.mde')
+        # The Office SIPs do not cover Access databases; Access signs them itself with MSACCESS.EXE /sign.
+        Engines        = @('Access')
+        SignPasses     = 1
+        SupportsAppend = $false
+        Description    = 'VBA projects in Access databases'
+    }
+    [pscustomobject]@{
         Id             = 'AppPackage'
         Name           = 'App package'
         Extensions     = @('.msix', '.appx', '.msixbundle', '.appxbundle')
