@@ -328,6 +328,12 @@ function Invoke-FileSigning {
     $attempts = if ($TimestampMode -ne 'None') { $TimestampRetryCount + 1 } else { 1 }
     $officeRetry = $provider.Id -eq 'OfficeVba'
     if ($officeRetry -and $attempts -gt 1) {
+        if (-not $OffClearSigPath) {
+            $sip = Get-OfficeSipStatus | Where-Object { $_.Is64Bit -eq [Environment]::Is64BitProcess } | Select-Object -First 1
+            if ($sip) {
+                $OffClearSigPath = $sip.OffClearSigPath
+            }
+        }
         $canClear = $OffClearSigPath -and [System.IO.File]::Exists($OffClearSigPath)
         if (-not $canClear -or (-not $clearOffice -and (Get-FileSignatureState -LiteralPath $LiteralPath).State -ne 'NotSigned')) {
             $attempts = 1
@@ -405,8 +411,11 @@ function Invoke-FileSigning {
         }
 
         $state = Get-FileSignatureState -LiteralPath $LiteralPath
+        # The state shows one signature only. A timestamp warning from any pass also means a signature has no timestamp,
+        # for example the appended signature of a dual-signed file.
+        $timestampMissing = -not $state.Timestamped -or @($warnings | Where-Object { Test-TimestampFailureText -Text $_ }).Count -gt 0
         $signedAsExpected = $state.State -notin 'NotSigned', 'Invalid', 'Unknown' -and (-not $expectedThumbprint -or $state.Thumbprint -eq $expectedThumbprint)
-        if ($TimestampMode -ne 'None' -and -not $state.Timestamped -and $signedAsExpected -and $attempt -lt $attempts) {
+        if ($TimestampMode -ne 'None' -and $timestampMissing -and $signedAsExpected -and $attempt -lt $attempts) {
             continue
         }
         break
@@ -424,7 +433,7 @@ function Invoke-FileSigning {
         return New-SigningResult -Path $LiteralPath -Status 'Failed' -Passes $completed -Signature $state -Detail "The file carries a signature from $($state.Signer), not the selected certificate."
     }
 
-    if ($TimestampMode -ne 'None' -and -not $state.Timestamped) {
+    if ($TimestampMode -ne 'None' -and $timestampMissing) {
         $tries = if ($attempts -gt 1) { " after $attempts attempts" } else { '' }
         return New-SigningResult -Path $LiteralPath -Status 'Failed' -Passes $completed -Signature $state -Detail "The file was signed without the requested timestamp; $TimestampServer could not be reached or refused the request$tries. Sign again when the server is reachable, or choose no timestamp."
     }

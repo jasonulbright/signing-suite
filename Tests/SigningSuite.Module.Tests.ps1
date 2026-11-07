@@ -774,9 +774,10 @@ Describe 'Signing with the PowerShell engine' {
     }
 
     It 'retries an Office file only when its VBA signatures can be cleared first: <Case>' -ForEach @(
-        @{ Case = 'unsigned before the run'; Before = 'NotSigned'; Clear = $false; Calls = 4; Clears = 1; Status = 'Signed' }
-        @{ Case = 'signed before, clearing asked for'; Before = 'Valid'; Clear = $true; Calls = 4; Clears = 2; Status = 'Signed' }
-        @{ Case = 'signed before, no clearing'; Before = 'Valid'; Clear = $false; Calls = 1; Clears = 0; Status = 'Failed' }
+        @{ Case = 'unsigned before the run'; Before = 'NotSigned'; Clear = $false; Discover = $false; Order = 'sign clear sign sign sign'; Status = 'Signed' }
+        @{ Case = 'unsigned, clearing tool found by the module'; Before = 'NotSigned'; Clear = $false; Discover = $true; Order = 'sign clear sign sign sign'; Status = 'Signed' }
+        @{ Case = 'signed before, clearing asked for'; Before = 'Valid'; Clear = $true; Discover = $false; Order = 'clear sign clear sign sign sign'; Status = 'Signed' }
+        @{ Case = 'signed before, no clearing'; Before = 'Valid'; Clear = $false; Discover = $false; Order = 'sign'; Status = 'Failed' }
     ) {
         $workbook = Join-Path $script:psRoot "retry-$($Case -replace '[ ,]+', '-').xlsm"
         New-TestZip -Path $workbook -Entries @{ '[Content_Types].xml' = '<Types/>'; 'xl/vbaProject.bin' = 'x' }
@@ -785,12 +786,15 @@ Describe 'Signing with the PowerShell engine' {
         $clearer = Join-Path $script:psRoot 'offclearsig-stub.exe'
         [System.IO.File]::WriteAllText($clearer, 'stub')
         $counter = @{ SignTool = 0 }
+        $events = [System.Collections.Generic.List[string]]::new()
         $before = $Before
         $thumbprint = $script:certificate.Thumbprint
         Mock -ModuleName SigningSuite Get-SipSubject { [pscustomobject]@{ Supported = $true; Guid = [guid]::Empty; Name = 'Office'; ErrorCode = 0 } }
-        Mock -ModuleName SigningSuite Clear-OfficeVbaSignature { [pscustomobject]@{ Success = $true; Message = '' } }
+        Mock -ModuleName SigningSuite Clear-OfficeVbaSignature { $events.Add('clear'); [pscustomobject]@{ Success = $true; Message = '' } }.GetNewClosure()
+        Mock -ModuleName SigningSuite Get-OfficeSipStatus { [pscustomobject]@{ Is64Bit = [Environment]::Is64BitProcess; OffClearSigPath = $clearer } }.GetNewClosure()
         Mock -ModuleName SigningSuite Invoke-SignTool {
             $counter.SignTool++
+            $events.Add('sign')
             if ($counter.SignTool -eq 1) {
                 $text = 'SignTool Error: The specified timestamp server either could not be reached or returned an invalid response.'
                 return [pscustomobject]@{ ExitCode = 1; TimedOut = $false; Output = ''; Error = $text; Errors = @($text); Warnings = @() }
@@ -811,13 +815,39 @@ Describe 'Signing with the PowerShell engine' {
             TimestampMode              = 'Rfc3161'
             TimestampServer            = 'http://timestamp.example.test'
             TimestampRetryDelaySeconds = 0
-            OffClearSigPath            = $clearer
             ClearOfficeSignatures      = $Clear
+        }
+        if (-not $Discover) {
+            $parameters.OffClearSigPath = $clearer
         }
         $result = Invoke-FileSigning @parameters
         $result.Status | Should -Be $Status
+        ($events -join ' ') | Should -Be $Order
+    }
+
+    It 'treats a timestamp warning on a signed pass as a missing timestamp: <Case>' -ForEach @(
+        @{ Case = 'retry available'; Retries = 1; Calls = 4; Status = 'Signed' }
+        @{ Case = 'no retry left'; Retries = 0; Calls = 2; Status = 'Failed' }
+    ) {
+        $path = Join-Path $script:psRoot "dual-warning-$Retries.dll"
+        New-TestPortableExecutable -Path $path
+        $tool = Join-Path $script:psRoot 'signtool-stub.exe'
+        [System.IO.File]::WriteAllText($tool, 'stub')
+        $counter = @{ SignTool = 0 }
+        $thumbprint = $script:certificate.Thumbprint
+        Mock -ModuleName SigningSuite Invoke-SignTool {
+            $counter.SignTool++
+            if ($counter.SignTool -eq 2) {
+                return [pscustomobject]@{ ExitCode = 2; TimedOut = $false; Output = ''; Error = ''; Errors = @(); Warnings = @('Signing succeeded, but an error occurred while attempting to timestamp: dual.dll') }
+            }
+            [pscustomobject]@{ ExitCode = 0; TimedOut = $false; Output = ''; Error = ''; Errors = @(); Warnings = @() }
+        }.GetNewClosure()
+        Mock -ModuleName SigningSuite Get-FileSignatureState {
+            [pscustomobject]@{ State = 'Untrusted'; Message = 'self-signed'; Signer = 'CN=Test'; Thumbprint = $thumbprint; Timestamped = $true }
+        }.GetNewClosure()
+        $result = Invoke-FileSigning -LiteralPath $path -Engine SignTool -SignToolPath $tool -Certificate $script:certificate -DualSign -TimestampMode Rfc3161 -TimestampServer 'http://timestamp.example.test' -TimestampRetryCount $Retries -TimestampRetryDelaySeconds 0
+        $result.Status | Should -Be $Status
         Should -Invoke -ModuleName SigningSuite Invoke-SignTool -Times $Calls -Exactly
-        Should -Invoke -ModuleName SigningSuite Clear-OfficeVbaSignature -Times $Clears -Exactly
     }
 
     It 'recognizes timestamp failures in signing output: <Text>' -ForEach @(
