@@ -34,7 +34,8 @@
     Seconds to wait before each new attempt. Default 3.
 
 .PARAMETER Verify
-    Checks signatures instead of signing.
+    Checks signatures instead of signing. The exit code is 1 when any file is invalid, revoked, unreadable, or not
+    checked. Access databases are always not checked, because the tool cannot read Access VBA signatures.
 
 .PARAMETER RemoveSignature
     Removes the signature from every signed file instead of signing. -WhatIf lists what would be unsigned.
@@ -175,7 +176,8 @@ if ($Verify) {
         Write-Error 'No signable files were found.' -ErrorAction Continue
         exit 1
     }
-    if (@($results | Where-Object { $_.State -in 'Invalid', 'Revoked', 'Unknown' }).Count -gt 0) {
+    # NotChecked (Access databases) fails the run too: a verification that could not check a file did not pass it.
+    if (@($results | Where-Object { $_.State -in 'Invalid', 'Revoked', 'Unknown', 'NotChecked' }).Count -gt 0) {
         exit 1
     }
     exit 0

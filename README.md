@@ -56,7 +56,7 @@ Extract `SigningSuite-<version>.zip` to any folder and double-click `SigningSuit
 | App package | .msix .appx .msixbundle .appxbundle | SignTool |
 | Access VBA | .accdb .accde .mdb .mde | Access |
 
-Windows decides whether it can sign a file by asking the Subject Interface Package (SIP) registered for it. A file no SIP recognizes, such as a renamed text file with an .exe extension, is marked Failed without being opened for signing.
+For the SignTool and PowerShell engines, Windows decides whether it can sign a file by asking the Subject Interface Package (SIP) registered for it. A file no SIP recognizes, such as a renamed text file with an .exe extension, is marked Failed without being opened for signing.
 
 ## Requirements
 
@@ -119,8 +119,10 @@ Access databases always use the **Access** engine, whatever engine you choose. *
 ### Access databases
 
 - Only the **Certificate store** identity works, with a certificate in `CurrentUser\My`. Access reads the certificate from that store.
-- Access opens each database, signs its VBA project and closes. The database must be closed in Access first.
-- When Access cannot sign, it shows a dialog and stays open. After 90 seconds the tool closes Access and shows the dialog text in the Details column.
+- Access opens each database, signs its VBA project and closes. The database must be closed in Access first. Sign only databases you trust: Access opens the database, so its startup code can run when the database is in a trusted location.
+- When Access cannot sign, it shows a dialog and stays open. The tool closes Access after 90 seconds, or after the full signing timeout when a timestamp is requested (Access tries the timestamp server again by itself), and shows the dialog text in the Details column.
+- Access databases are signed one at a time, also across several copies of the tool, because the timestamp values are per user.
+- Access chooses the timestamp protocol itself; the tool passes only the server URL.
 - Access takes the timestamp server and digest from the per-user values under `HKCU\Software\Microsoft\VBA\Security`, as described in [Digitally sign your VBA macro project](https://support.microsoft.com/office/digitally-sign-your-vba-macro-project-956e9cc8-bbf6-4365-8bfa-98505ecd1c01). For each run the tool sets `TimeStampURL`, `TimeStampRetryCount`, `TimeStampRetryDelay` (in milliseconds) and `V1HashEnhanced` from the signing options, then restores your own values. With no timestamp, `TimeStampURL` is removed for the run.
 - Microsoft does not document where Access stores the VBA signature, so the tool does not read it. The Signature column shows **Not checked**. After signing, open the database and check **Tools > Digital Signature** in the Visual Basic Editor. Dual sign, description and removal do not apply to Access databases.
 
@@ -176,7 +178,7 @@ powershell.exe -NoProfile -File .\Invoke-SigningSuite.ps1 -Path .\out\App.msix -
 # Digest signing library with its certificate
 powershell.exe -NoProfile -File .\Invoke-SigningSuite.ps1 -Path .\out -DlibPath C:\Tools\Hsm.Dlib.dll -DlibMetadata .\hsm.json -CertificateFile .\signer.cer
 
-# Verify with an online revocation check; exits 1 when a signature is invalid, revoked or unreadable
+# Verify with an online revocation check; exits 1 when a signature is invalid, revoked, unreadable or not checked (Access databases)
 powershell.exe -NoProfile -File .\Invoke-SigningSuite.ps1 -Path .\out -Verify
 
 # Remove signatures; -WhatIf lists the signed files without changing them

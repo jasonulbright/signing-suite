@@ -109,6 +109,14 @@ Describe 'Command-line script' {
         $LASTEXITCODE | Should -Be 0
     }
 
+    It 'exits 1 when verify cannot check an Access database' {
+        $accessRoot = [System.IO.Directory]::CreateDirectory((Join-Path $TestDrive 'cli-access')).FullName
+        [System.IO.File]::WriteAllBytes((Join-Path $accessRoot 'App.accdb'), [byte[]](1..64))
+        $output = & $script:hostExe -NoProfile -ExecutionPolicy Bypass -File $script:cliScript -Path $accessRoot -Verify 2>&1
+        $LASTEXITCODE | Should -Be 1
+        ($output | Out-String) | Should -BeLike '*NotChecked*'
+    }
+
     It 'exits 1 when no signable file is found' {
         $empty = [System.IO.Directory]::CreateDirectory((Join-Path $TestDrive 'cli-empty')).FullName
         [System.IO.File]::WriteAllText((Join-Path $empty 'notes.txt'), 'x')

@@ -271,6 +271,41 @@ function Get-ProcessDialogText {
     }
 }
 
+function Read-ProcessDialogText {
+    <#
+    .SYNOPSIS
+        Runs Get-ProcessDialogText with a time limit, so a hung UI Automation provider cannot keep Access running.
+    .DESCRIPTION
+        The read runs in its own runspace. A read that does not end in time is stopped and left to finish on its own;
+        disposing it would wait for the blocked call.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)]
+        [int]$ProcessId,
+
+        [int]$TimeoutSeconds = 15
+    )
+
+    $shell = [powershell]::Create()
+    [void]$shell.AddScript(${function:Get-ProcessDialogText}.ToString()).AddParameter('ProcessId', $ProcessId)
+    $pending = $shell.BeginInvoke()
+    if ($pending.AsyncWaitHandle.WaitOne([Math]::Max(1, $TimeoutSeconds) * 1000)) {
+        try {
+            return [string](@($shell.EndInvoke($pending)) | Select-Object -Last 1)
+        }
+        catch {
+            return ''
+        }
+        finally {
+            $shell.Dispose()
+        }
+    }
+    [void]$shell.BeginStop($null, $null)
+    ''
+}
+
 function Invoke-AccessFileSigning {
     <#
     .SYNOPSIS
@@ -329,16 +364,39 @@ function Invoke-AccessFileSigning {
     $beforeWrite = $before.LastWriteTimeUtc
     $beforeLength = $before.Length
     $server = if ($TimestampMode -ne 'None') { $TimestampServer } else { '' }
-    $snapshot = $null
+    # The VBA signing values are per user, so runs in other processes of the same user wait for this one. The mutex
+    # name carries the user SID: another user has their own values and must not wait.
+    $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $mutex = [System.Threading.Mutex]::new($false, "Global\SigningSuite.VbaSigningSetting.$sid")
+    $owned = $false
     try {
-        $snapshot = Set-VbaSigningSetting -TimestampServer $server -TimestampRetryCount $TimestampRetryCount -TimestampRetryDelaySeconds $TimestampRetryDelaySeconds -DigestAlgorithm $DigestAlgorithm -Confirm:$false
-        $arguments = New-AccessSignArgument -LiteralPath $LiteralPath -Thumbprint $Certificate.Thumbprint
-        $run = Invoke-AccessProcess -AccessPath $AccessPath -ArgumentList $arguments -TimeoutSeconds $TimeoutSeconds
+        try {
+            $owned = $mutex.WaitOne([Math]::Max(1, $TimeoutSeconds) * 1000)
+        }
+        catch [System.Threading.AbandonedMutexException] {
+            # The previous owner exited without releasing; this run owns the mutex now.
+            $owned = $true
+        }
+        if (-not $owned) {
+            return New-SigningResult -Path $LiteralPath -Status 'Failed' -Detail "Another Access signing run of this user did not finish within $TimeoutSeconds seconds."
+        }
+        $snapshot = $null
+        try {
+            $snapshot = Set-VbaSigningSetting -TimestampServer $server -TimestampRetryCount $TimestampRetryCount -TimestampRetryDelaySeconds $TimestampRetryDelaySeconds -DigestAlgorithm $DigestAlgorithm -Confirm:$false
+            $arguments = New-AccessSignArgument -LiteralPath $LiteralPath -Thumbprint $Certificate.Thumbprint
+            $run = Invoke-AccessProcess -AccessPath $AccessPath -ArgumentList $arguments -TimeoutSeconds $TimeoutSeconds
+        }
+        finally {
+            if ($snapshot) {
+                Restore-VbaSigningSetting -Snapshot $snapshot -Confirm:$false
+            }
+        }
     }
     finally {
-        if ($snapshot) {
-            Restore-VbaSigningSetting -Snapshot $snapshot -Confirm:$false
+        if ($owned) {
+            $mutex.ReleaseMutex()
         }
+        $mutex.Dispose()
     }
 
     if ($run.TimedOut) {
@@ -398,7 +456,7 @@ function Invoke-AccessProcess {
         if ($process.WaitForExit([Math]::Max(1, $TimeoutSeconds) * 1000)) {
             return [pscustomobject]@{ TimedOut = $false; ExitCode = $process.ExitCode; DialogText = '' }
         }
-        $text = Get-ProcessDialogText -ProcessId $process.Id
+        $text = Read-ProcessDialogText -ProcessId $process.Id -TimeoutSeconds 15
         try {
             $process.Kill()
             [void]$process.WaitForExit(10000)

@@ -192,8 +192,9 @@ function Invoke-FileSigning {
             TimestampServer            = $TimestampServer
             TimestampRetryCount        = $TimestampRetryCount
             TimestampRetryDelaySeconds = $TimestampRetryDelaySeconds
-            # Access reports a failure in a dialog and waits, so the wait is shorter than for signtool.
-            TimeoutSeconds             = [Math]::Min($TimeoutSeconds, 90)
+            # Access reports a failure in a dialog and waits, so the wait is shorter than for signtool. Access retries the
+            # timestamp server itself, so a run that asks for a timestamp keeps the caller's full timeout.
+            TimeoutSeconds             = if ($TimestampMode -ne 'None') { $TimeoutSeconds } else { [Math]::Min($TimeoutSeconds, 90) }
         }
         return Invoke-AccessFileSigning @access
     }

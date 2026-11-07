@@ -1121,7 +1121,7 @@ function Get-SigningRunSummary {
     }
     $accessCount = @($Rows | Where-Object ProviderId -eq 'AccessVba').Count
     if ($accessCount -gt 0) {
-        $warnings.Add("Microsoft Access opens and signs $accessCount Access database$(if ($accessCount -ne 1) { 's' }) one at a time. The app cannot read Access signatures, so it does not check the result.")
+        $warnings.Add("Microsoft Access opens and signs $accessCount Access database$(if ($accessCount -ne 1) { 's' }) one at a time. The app cannot read Access signatures: it cannot show a signature these databases already carry, signing replaces it, and the result is not checked.")
     }
 
     [pscustomobject]@{
@@ -1621,6 +1621,9 @@ function Invoke-Signing {
     }
 
     $requested = Get-ComboTag -Combo $script:ui.EngineCombo
+    # Access can be installed while the window is open; the lookup is cached per file version.
+    $script:AccessPath = [string](Find-MsAccess)
+    $options.AccessPath = $script:AccessPath
     $items = [System.Collections.Generic.List[object]]::new()
     $itemRows = [System.Collections.Generic.List[object]]::new()
     # Rows that cannot be signed change only after the user confirms the run, so Cancel leaves the list as it was.
@@ -1648,7 +1651,10 @@ function Invoke-Signing {
         [void](Show-Message -Icon Warning -Text 'No files were signed; the Details column shows why.')
         return
     }
-    $summary = Get-SigningRunSummary -Identity $script:Identity -Options $options -Rows $itemRows.ToArray() -Engine $requested -SkippedRows @($candidates.SkippedRows)
+    # Access databases are signed by Access whatever engine is selected, so the label names the engines that run.
+    $accessItems = @($items | Where-Object Engine -eq 'Access').Count
+    $engineLabel = if ($accessItems -eq 0) { $requested } elseif ($accessItems -eq $items.Count) { 'Access' } else { "$requested, and Access for Access databases" }
+    $summary = Get-SigningRunSummary -Identity $script:Identity -Options $options -Rows $itemRows.ToArray() -Engine $engineLabel -SkippedRows @($candidates.SkippedRows)
     if (-not (Show-RunConfirmation -Summary $summary)) {
         return
     }

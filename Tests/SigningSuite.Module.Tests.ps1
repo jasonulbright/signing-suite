@@ -1063,7 +1063,11 @@ Describe 'Access databases' {
 
     It 'reports the signature state as not checked in verify and in the list text' {
         (Get-FileSignatureState -LiteralPath (Join-Path $script:accessRoot 'App.accdb')).State | Should -Be 'NotChecked'
-        $verification = Test-FileSignature -LiteralPath (Join-Path $script:accessRoot 'App.accdb') -SkipRevocation
+        $tool = Join-Path $script:accessRoot 'signtool-stub.exe'
+        [System.IO.File]::WriteAllText($tool, 'stub')
+        Mock -ModuleName SigningSuite Invoke-SignTool { throw 'signtool must not run for an Access database.' }
+        $verification = Test-FileSignature -LiteralPath (Join-Path $script:accessRoot 'App.accdb') -SignToolPath $tool -SkipRevocation
+        Should -Invoke -ModuleName SigningSuite Invoke-SignTool -Times 0 -Exactly
         $verification.State | Should -Be 'NotChecked'
         $verification.Detail | Should -BeLike 'Not checked.*'
         $verification.Detail | Should -Not -BeLike '*timestamped*'
@@ -1217,6 +1221,35 @@ Describe 'Access databases' {
         $fast = InModuleScope SigningSuite -Parameters @{ Exe = $host32 } { param($Exe) Invoke-AccessProcess -AccessPath $Exe -ArgumentList @('-NoProfile', '-Command', 'exit 3') -TimeoutSeconds 30 }
         $fast.TimedOut | Should -BeFalse
         $fast.ExitCode | Should -Be 3
+    }
+
+    It 'reads dialog text in a time-limited runspace and returns nothing for a process without dialogs' {
+        $text = InModuleScope SigningSuite { Read-ProcessDialogText -ProcessId $PID -TimeoutSeconds 15 }
+        $text | Should -BeOfType [string]
+        $text | Should -Be ''
+    }
+
+    It 'waits for an Access signing run of the same user in another process' {
+        $path = Join-Path $script:accessRoot 'Waits.accdb'
+        [System.IO.File]::WriteAllBytes($path, [byte[]](1..64))
+        $ready = Join-Path $script:accessRoot 'mutex-ready.txt'
+        $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+        $holder = "`$m = [System.Threading.Mutex]::new(`$false, 'Global\SigningSuite.VbaSigningSetting.$sid'); [void]`$m.WaitOne(); [System.IO.File]::WriteAllText('$ready', 'x'); Start-Sleep -Seconds 8; `$m.ReleaseMutex()"
+        $process = Start-Process -FilePath (Join-Path $env:windir 'System32\WindowsPowerShell\v1.0\powershell.exe') -ArgumentList @('-NoProfile', '-Command', $holder) -WindowStyle Hidden -PassThru
+        try {
+            $deadline = [DateTime]::UtcNow.AddSeconds(20)
+            while (-not [System.IO.File]::Exists($ready) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 100 }
+            [System.IO.File]::Exists($ready) | Should -BeTrue
+            Mock -ModuleName SigningSuite Test-CurrentUserCertificate { $true }
+            Mock -ModuleName SigningSuite Invoke-AccessProcess { throw 'Access must not start while another run holds the lock.' }
+            $result = Invoke-FileSigning -LiteralPath $path -Engine Access -AccessPath $script:accessStub -Certificate $script:accessCertificate -TimeoutSeconds 1
+            $result.Status | Should -Be 'Failed'
+            $result.Detail | Should -Be 'Another Access signing run of this user did not finish within 1 seconds.'
+            Should -Invoke -ModuleName SigningSuite Invoke-AccessProcess -Times 0 -Exactly
+        }
+        finally {
+            if (-not $process.HasExited) { $process.Kill() }
+        }
     }
 
     It 'passes a database path with spaces and brackets as one argument' {
