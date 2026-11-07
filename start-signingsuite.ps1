@@ -22,7 +22,7 @@
 
 .NOTES
     ScriptName : start-signingsuite.ps1
-    Version    : 2026.09.27.0007
+    Version    : 2026.11.07.0008
 #>
 [CmdletBinding()]
 param(
