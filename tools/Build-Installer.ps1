@@ -4,8 +4,8 @@
     Builds SigningSuiteSetup-<version>.exe with Inno Setup from a git ref and adds it to checksums.txt.
 
 .DESCRIPTION
-    The installer payload is the same file set as the portable zip: `git archive` of the ref, so export-ignore paths stay
-    out. Every prerequisite download named in installer\SigningSuite.iss is fetched and checked against its pinned SHA256
+    The installer payload is the same file set as the portable zip: `git archive` of the ref minus the
+    development paths that Build-Release.ps1 also leaves out. Every prerequisite download named in installer\SigningSuite.iss is fetched and checked against its pinned SHA256
     and its Microsoft signature before compiling, so a stale pin fails the build instead of a user's installation.
 
 .PARAMETER Version
@@ -136,7 +136,20 @@ $stage = Join-Path $work 'stage'
 try {
     [void][System.IO.Directory]::CreateDirectory($stage)
     $archive = Join-Path $work 'payload.zip'
-    & git -C $repoRoot archive --format=zip -o $archive $Ref
+    # Build-Release.ps1 excludes the same paths, so the zip and the installer payload hold the same files.
+    $excludePaths = @(
+        ':(exclude)Tests'
+        ':(exclude)tools'
+        ':(exclude).github'
+        ':(exclude)installer'
+        ':(exclude)screenshots'
+        ':(exclude)RELEASING.md'
+        ':(exclude)ROADMAP.md'
+        ':(exclude).gitattributes'
+        ':(exclude).gitignore'
+        ':(exclude).coderabbit.yaml'
+    )
+    & git -C $repoRoot archive --format=zip -o $archive $Ref -- . $excludePaths
     if ($LASTEXITCODE -ne 0) {
         throw "git archive failed with exit code $LASTEXITCODE."
     }
@@ -145,6 +158,12 @@ try {
         if (-not [System.IO.File]::Exists((Join-Path $stage $required))) {
             throw "The installer payload is missing $required."
         }
+    }
+    $stageRoot = [System.IO.Path]::GetFullPath($stage).TrimEnd('\') + '\'
+    $staged = @(Get-ChildItem -LiteralPath $stage -Recurse -File | ForEach-Object { $_.FullName.Substring($stageRoot.Length).Replace('\', '/') })
+    $forbidden = @($staged | Where-Object { $_ -match '^(Tests|tools|\.github|installer|screenshots)/' -or $_ -match '\.local\.' -or $_ -in 'RELEASING.md', 'ROADMAP.md', '.gitattributes', '.gitignore', '.coderabbit.yaml' })
+    if ($forbidden.Count -gt 0) {
+        throw "The installer payload contains excluded paths: $($forbidden -join ', ')"
     }
 
     $parts = $Version.Split('.') | ForEach-Object { [int]$_ }
