@@ -10,7 +10,7 @@
 
 WPF tool that Authenticode-signs scripts, executables, installers, cabinets, catalogs, app packages and the VBA projects in Office files. Drop files or folders onto the window; each file shows its format, its current signature and whether it can be signed, and one button signs the rest.
 
-![Signing Suite](screenshots/main.png)
+![Signing Suite](https://raw.githubusercontent.com/jasonulbright/signing-suite/main/screenshots/main.png)
 
 ## Install
 

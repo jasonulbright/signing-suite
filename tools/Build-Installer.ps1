@@ -159,6 +159,12 @@ try {
             throw "The installer payload is missing $required."
         }
     }
+    $stageRoot = [System.IO.Path]::GetFullPath($stage).TrimEnd('\') + '\'
+    $staged = @(Get-ChildItem -LiteralPath $stage -Recurse -File | ForEach-Object { $_.FullName.Substring($stageRoot.Length).Replace('\', '/') })
+    $forbidden = @($staged | Where-Object { $_ -match '^(Tests|tools|\.github|installer|screenshots)/' -or $_ -match '\.local\.' -or $_ -in 'RELEASING.md', 'ROADMAP.md', '.gitattributes', '.gitignore', '.coderabbit.yaml' })
+    if ($forbidden.Count -gt 0) {
+        throw "The installer payload contains excluded paths: $($forbidden -join ', ')"
+    }
 
     $parts = $Version.Split('.') | ForEach-Object { [int]$_ }
     $fileVersion = '{0}.{1}.{2}.{3}' -f $parts
