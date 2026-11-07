@@ -83,6 +83,7 @@ $script:SipAction = $null
 $script:SignStats = $null
 $script:ScanStats = $null
 $script:SignTool = $null
+$script:AccessPath = ''
 $script:Settings = Get-SigningSuiteSettings
 $script:Identity = [pscustomobject]@{
     Source          = 'Store'
@@ -168,6 +169,7 @@ $script:SignWorker = {
             Description           = $Options.Description
             DescriptionUrl        = $Options.DescriptionUrl
             SignToolPath          = $Options.SignToolPath
+            AccessPath            = $Options.AccessPath
         }
         if ($Certificate) {
             $parameters.Certificate = $Certificate
@@ -1117,6 +1119,10 @@ function Get-SigningRunSummary {
     if ($Options.ClearVbaSignatures -and $officeCount -gt 0) {
         $warnings.Add("Existing VBA signatures in $officeCount Office file$(if ($officeCount -ne 1) { 's' }) will be removed before signing. Files that fail to sign afterwards are left without a VBA signature.")
     }
+    $accessCount = @($Rows | Where-Object ProviderId -eq 'AccessVba').Count
+    if ($accessCount -gt 0) {
+        $warnings.Add("Microsoft Access opens and signs $accessCount Access database$(if ($accessCount -ne 1) { 's' }) one at a time. The app cannot read Access signatures, so it does not check the result.")
+    }
 
     [pscustomobject]@{
         Title         = 'Confirm signing'
@@ -1399,6 +1405,7 @@ function Invoke-ChangeIdentity {
 
 function Update-SignToolState {
     $script:SignTool = Find-SignTool -ConfiguredPath $script:Settings.SignToolPath
+    $script:AccessPath = [string](Find-MsAccess)
     if ($script:SignTool) {
         $script:ui.SignToolBanner.Visibility = [System.Windows.Visibility]::Collapsed
     }
@@ -1581,6 +1588,7 @@ function Get-SigningOptions {
         Description        = $script:ui.DescriptionBox.Text.Trim()
         DescriptionUrl     = $script:ui.DescriptionUrlBox.Text.Trim()
         SignToolPath       = if ($script:SignTool) { $script:SignTool.Path } else { '' }
+        AccessPath         = $script:AccessPath
         DlibPath           = if ($source -ne 'Store') { $script:Identity.DlibPath } else { '' }
         MetadataPath       = if ($source -ne 'Store') { $script:Identity.MetadataPath } else { '' }
         CertificateFile    = if ($source -eq 'Dlib') { $script:Identity.CertificateFile } else { '' }
@@ -1623,7 +1631,7 @@ function Invoke-Signing {
             $notAttempted.Add(@{ Path = $row.Path; Changes = @{ Status = 'Skipped'; Detail = 'Not a signable file type.' } })
             continue
         }
-        $engine = Resolve-SigningEngine -Provider $provider -Requested $requested -SignToolAvailable ([bool]$script:SignTool) -Source $options.Source -TimestampMode $options.TimestampMode
+        $engine = Resolve-SigningEngine -Provider $provider -Requested $requested -SignToolAvailable ([bool]$script:SignTool) -AccessAvailable ([bool]$script:AccessPath) -Source $options.Source -TimestampMode $options.TimestampMode
         if (-not $engine.Engine) {
             $notAttempted.Add(@{ Path = $row.Path; Changes = @{ Status = 'Failed'; Detail = "Not signed: $($engine.Reason)" } })
             continue
@@ -1767,9 +1775,9 @@ function Invoke-Verify {
 
         Switch-BusyState -Busy $false
         $stats = $script:SignStats
-        $parts = foreach ($state in 'Valid', 'Untrusted', 'Revoked', 'Invalid', 'NotSigned', 'Unknown') {
+        $parts = foreach ($state in 'Valid', 'Untrusted', 'Revoked', 'Invalid', 'NotSigned', 'Unknown', 'NotChecked') {
             if ($stats.States[$state]) {
-                $label = switch ($state) { 'NotSigned' { 'not signed' } 'Unknown' { 'unreadable' } default { $state.ToLowerInvariant() } }
+                $label = switch ($state) { 'NotSigned' { 'not signed' } 'Unknown' { 'unreadable' } 'NotChecked' { 'not checked (Access)' } default { $state.ToLowerInvariant() } }
                 "$($stats.States[$state]) $label"
             }
         }

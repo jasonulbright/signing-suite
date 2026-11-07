@@ -54,6 +54,7 @@ Extract `SigningSuite-<version>.zip` to any folder and double-click `SigningSuit
 | Catalog | .cat | SignTool, PowerShell |
 | Office VBA | .xlsm .xlsb .xltm .xlam .docm .dotm .pptm .potm .ppam .ppsm .vsdm .vssm .vstm and .xls .xlt .xla .doc .dot .wiz .ppt .pot .pps .ppa .mpp .mpt .pub .vsd .vss .vst .vdw | SignTool, PowerShell |
 | App package | .msix .appx .msixbundle .appxbundle | SignTool |
+| Access VBA | .accdb .accde .mdb .mde | Access |
 
 Windows decides whether it can sign a file by asking the Subject Interface Package (SIP) registered for it. A file no SIP recognizes, such as a renamed text file with an .exe extension, is marked Failed without being opened for signing.
 
@@ -64,6 +65,7 @@ Windows decides whether it can sign a file by asking the Subject Interface Packa
 | PowerShell | Windows PowerShell 5.1. PowerShell 7 is not supported: the window restarts itself in Windows PowerShell, and the command-line script refuses to run. |
 | signtool.exe | Optional. From the Windows SDK ("Signing Tools for Desktop Apps"). Needed for app packages, RFC 3161 timestamps, dual signing, Artifact Signing and digest signing libraries. The tool finds the newest SDK build, or you choose the file. A signtool.exe from the SDK, from PATH or from the chosen path is used only with a valid Microsoft signature. |
 | Office SIPs | Needed for Office files: [Microsoft Office Subject Interface Packages for Digitally Signing VBA Projects](https://www.microsoft.com/download/details.aspx?id=56617), registered with `regsvr32` for the bitness of the PowerShell process. `msosipx.dll` covers the Open XML formats, `msosip.dll` the binary formats. The Office installation itself is not used. |
+| Microsoft Access | Needed for Access databases. Access signs them itself with `MSACCESS.EXE <database> /sign "\<thumbprint>"`. Signing .accdb and .accde files needs Access for Microsoft 365 version 2505 or later; Access 2021 refuses them. Microsoft does not document the `/sign` switch; the source is [Command Line Project Signing](https://www.isladogs.co.uk/command-line-signing/) (isladogs.co.uk). |
 | Artifact Signing | Optional. [Artifact Signing Client Tools](https://learn.microsoft.com/azure/artifact-signing/how-to-signing-integrations) (`winget install -e --id Microsoft.Azure.ArtifactSigningClientTools`), an account, a certificate profile and the Certificate Profile Signer role. |
 | Rights | Standard user. Registering the Office SIPs needs administrator rights once. |
 
@@ -93,7 +95,7 @@ powershell.exe -NoProfile -STA -File .\start-signingsuite.ps1 'C:\Build\Output' 
 
 ### Engines
 
-**Automatic** uses SignTool when signtool.exe is found and PowerShell otherwise. **PowerShell** uses `Set-AuthenticodeSignature`, which adds Authenticode (legacy) timestamps and one signature per file. The tool refuses a combination the chosen engine cannot sign and says why in the Details column instead of signing differently than asked.
+Access databases always use the **Access** engine, whatever engine you choose. **Automatic** uses SignTool when signtool.exe is found and PowerShell otherwise. **PowerShell** uses `Set-AuthenticodeSignature`, which adds Authenticode (legacy) timestamps and one signature per file. The tool refuses a combination the chosen engine cannot sign and says why in the Details column instead of signing differently than asked.
 
 ### Options
 
@@ -113,6 +115,14 @@ powershell.exe -NoProfile -STA -File .\start-signingsuite.ps1 'C:\Build\Output' 
 ### Removing signatures
 
 **Remove signatures...** unsigns the signed files the current filter shows, after a confirmation dialog that lists the signers and the file count. Scripts, executables, installers and app packages are unsigned through the Subject Interface Package Windows registers for the file type; Office files through `offclearsig.exe`. Cabinets and catalogs are never offered: Windows has no removal path for a cabinet signature, and a catalog is itself a signature. Unsigned files return to **Ready**.
+
+### Access databases
+
+- Only the **Certificate store** identity works, with a certificate in `CurrentUser\My`. Access reads the certificate from that store.
+- Access opens each database, signs its VBA project and closes. The database must be closed in Access first.
+- When Access cannot sign, it shows a dialog and stays open. After 90 seconds the tool closes Access and shows the dialog text in the Details column.
+- Access takes the timestamp server and digest from the per-user values under `HKCU\Software\Microsoft\VBA\Security`, as described in [Digitally sign your VBA macro project](https://support.microsoft.com/office/digitally-sign-your-vba-macro-project-956e9cc8-bbf6-4365-8bfa-98505ecd1c01). For each run the tool sets `TimeStampURL`, `TimeStampRetryCount`, `TimeStampRetryDelay` (in milliseconds) and `V1HashEnhanced` from the signing options, then restores your own values. With no timestamp, `TimeStampURL` is removed for the run.
+- Microsoft does not document where Access stores the VBA signature, so the tool does not read it. The Signature column shows **Not checked**. After signing, open the database and check **Tools > Digital Signature** in the Visual Basic Editor. Dual sign, description and removal do not apply to Access databases.
 
 ## Behavior
 

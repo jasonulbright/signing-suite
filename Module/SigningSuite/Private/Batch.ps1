@@ -30,6 +30,8 @@ function Invoke-SigningBatch {
 
         [string]$SignToolPath,
 
+        [string]$AccessPath,
+
         [ValidateSet('SHA256', 'SHA384', 'SHA512')]
         [string]$DigestAlgorithm = 'SHA256',
 
@@ -92,6 +94,10 @@ function Invoke-SigningBatch {
     }
 
     $signToolAvailable = [bool]$SignToolPath -and [System.IO.File]::Exists($SignToolPath)
+    if (-not $PSBoundParameters.ContainsKey('AccessPath')) {
+        $AccessPath = [string](Find-MsAccess)
+    }
+    $accessAvailable = [bool]$AccessPath -and [System.IO.File]::Exists($AccessPath)
     # A timestamp retry on an Office file needs offclearsig.exe even when clearing was not asked for.
     $offClearSig = $null
     if ($ClearOfficeSignatures -or $TimestampMode -ne 'None') {
@@ -135,7 +141,7 @@ function Invoke-SigningBatch {
         }
 
         $provider = Get-FormatProvider -Id $info.ProviderId
-        $choice = Resolve-SigningEngine -Provider $provider -Requested $Engine -SignToolAvailable $signToolAvailable -Source $Source -TimestampMode $TimestampMode
+        $choice = Resolve-SigningEngine -Provider $provider -Requested $Engine -SignToolAvailable $signToolAvailable -AccessAvailable $accessAvailable -Source $Source -TimestampMode $TimestampMode
         if (-not $choice.Engine) {
             $result.Status = 'Failed'
             $result.Detail = "Not signed: $($choice.Reason)"
@@ -164,6 +170,7 @@ function Invoke-SigningBatch {
             Description                = $Description
             DescriptionUrl             = $DescriptionUrl
             SignToolPath               = $SignToolPath
+            AccessPath                 = $AccessPath
             TimeoutSeconds             = $TimeoutSeconds
         }
         if ($Source -eq 'Store') {
