@@ -1,5 +1,18 @@
 # Changelog
 
+## [2026.11.07.0008] - 2026-11-07
+
+### Features
+
+- Sign Access databases (.accdb, .accde, .mdb, .mde) through Microsoft Access.
+- Retry the timestamp up to 3 times when the server fails.
+- Set timestamp retries with -TimestampRetryCount and -TimestampRetryDelaySeconds.
+
+### Fixes
+
+- Show the full timestamp server error message.
+- Fail -Verify when an Access database cannot be checked.
+
 ## [2026.09.27.0007] - 2026-09-27
 
 ### Security

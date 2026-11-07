@@ -51,7 +51,7 @@
 
 .NOTES
     ScriptName : Invoke-SigningSuite.ps1
-    Version    : 2026.09.27.0007
+    Version    : 2026.11.07.0008
 #>
 [CmdletBinding(SupportsShouldProcess, DefaultParameterSetName = 'Store')]
 param(
