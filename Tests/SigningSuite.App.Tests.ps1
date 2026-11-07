@@ -232,7 +232,7 @@ public static string[] Split(string commandLine)
         $attributes | Should -Not -Match 'export-ignore'
         foreach ($builder in 'Build-Release.ps1', 'Build-Installer.ps1') {
             $text = [System.IO.File]::ReadAllText((Join-Path $script:repoRoot "tools\$builder"))
-            foreach ($path in 'Tests', 'tools', '.github', 'installer', 'screenshots', 'RELEASING.md', 'ROADMAP.md', '.gitattributes', '.gitignore') {
+            foreach ($path in 'Tests', 'tools', '.github', 'installer', 'screenshots', 'RELEASING.md', 'ROADMAP.md', '.gitattributes', '.gitignore', '.coderabbit.yaml') {
                 $text | Should -Match ([regex]::Escape("':(exclude)$path'"))
             }
         }

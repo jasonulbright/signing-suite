@@ -49,7 +49,7 @@ $zipPath = Join-Path $OutputDirectory $zipName
 if ([System.IO.File]::Exists($zipPath)) {
     [System.IO.File]::Delete($zipPath)
 }
-# Keep this list identical to the one in Build-Installer.ps1.
+# Build-Installer.ps1 excludes the same paths, so the zip and the installer payload hold the same files.
 $excludePaths = @(
     ':(exclude)Tests'
     ':(exclude)tools'
@@ -60,6 +60,7 @@ $excludePaths = @(
     ':(exclude)ROADMAP.md'
     ':(exclude).gitattributes'
     ':(exclude).gitignore'
+    ':(exclude).coderabbit.yaml'
 )
 & git -C $repoRoot archive --format=zip -o $zipPath $tag -- . $excludePaths
 if ($LASTEXITCODE -ne 0) {
@@ -74,7 +75,7 @@ try {
 finally {
     $zip.Dispose()
 }
-$forbidden = @($entries | Where-Object { $_ -match '^(Tests|tools)/' -or $_ -match '\.local\.' -or $_ -in 'RELEASING.md', 'ROADMAP.md', '.gitattributes', '.gitignore' })
+$forbidden = @($entries | Where-Object { $_ -match '^(Tests|tools|\.github|installer|screenshots)/' -or $_ -match '\.local\.' -or $_ -in 'RELEASING.md', 'ROADMAP.md', '.gitattributes', '.gitignore', '.coderabbit.yaml' })
 if ($forbidden.Count -gt 0) {
     throw "The archive contains excluded paths: $($forbidden -join ', ')"
 }

@@ -136,7 +136,7 @@ $stage = Join-Path $work 'stage'
 try {
     [void][System.IO.Directory]::CreateDirectory($stage)
     $archive = Join-Path $work 'payload.zip'
-    # Keep this list identical to the one in Build-Release.ps1.
+    # Build-Release.ps1 excludes the same paths, so the zip and the installer payload hold the same files.
     $excludePaths = @(
         ':(exclude)Tests'
         ':(exclude)tools'
@@ -147,6 +147,7 @@ try {
         ':(exclude)ROADMAP.md'
         ':(exclude).gitattributes'
         ':(exclude).gitignore'
+        ':(exclude).coderabbit.yaml'
     )
     & git -C $repoRoot archive --format=zip -o $archive $Ref -- . $excludePaths
     if ($LASTEXITCODE -ne 0) {
